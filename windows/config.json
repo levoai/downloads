@@ -1,0 +1,9 @@
+{
+    "Name": "Levoai Sensor",
+    "DisplayName": "Levoai Sensor Service",
+    "Description": "Service for running the Levoai Sensor",
+    "LogFilePath": "C:\\Users\\levoai\\levoai-service.log",
+    "Exec": "C:\\Users\\levoai\\levoai-sensor.exe",
+    "Args": ["apidump", "--satellite-url", "your satellite url (http(s)://hostname|IP:port)", "--levo-env", "your application environment (staging, production etc.)", "--levoai-org-id", "your levo org id"]
+  }
+  
