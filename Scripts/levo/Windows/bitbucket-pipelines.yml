@@ -1,0 +1,181 @@
+# Bitbucket Pipeline configuration for Levo security testing
+# Windows self-hosted runner version - uses PowerShell script
+#
+# This pipeline uses a PowerShell script that handles:
+# - Python 3.12+ detection and validation
+# - Virtual environment creation/reuse
+# - Levo CLI installation from Google Artifact Registry
+# - Security test execution
+#
+# ============================================================================
+# REQUIRED REPOSITORY VARIABLES (Settings > Repository variables)
+# ============================================================================
+# LEVO_API_KEY     - (Secured) Levo API key for authentication
+# LEVO_ORG_ID      - Levo organization ID
+# PYPI_USERNAME    - Set to "oauth2accesstoken" for Google Artifact Registry
+# PYPI_PASSWORD    - (Secured) Google Cloud access token
+#
+# ============================================================================
+# OPTIONAL REPOSITORY VARIABLES
+# ============================================================================
+# LEVO_CLI_VERSION - Specific CLI version (default: latest)
+# LEVO_API_URL     - Custom Levo API URL (e.g., https://api.dev.levo.ai)
+# APP_NAME         - Application name (default: repository name)
+# ENVIRONMENT      - Target environment (default: staging)
+# TEST_METHODS     - HTTP methods to test (default: GET,POST)
+# FAIL_SCOPE       - new|any|none (default: new)
+# FAIL_SEVERITY    - critical|high|medium|low|none (default: high)
+#
+# ============================================================================
+# SCRIPT LOCATION
+# ============================================================================
+# The PowerShell script is located on the Windows VM at:
+# C:\Users\venkat\levo-cli-runner.ps1
+#
+# Once testing is complete, you can host the script online and update
+# the LEVO_SCRIPT_PATH variable below to use a URL instead.
+# ============================================================================
+
+definitions:
+  # Local script path on Windows VM (using forward slashes - PowerShell accepts these)
+  variables:
+    LEVO_SCRIPT_PATH: 'C:/Users/venkat/levo-cli-runner.ps1'
+
+  caches:
+    levo-venv: .levo-venv
+    pip: ~/.cache/pip
+
+  steps:
+    # Security test step template
+    - step: &security-test
+        name: Levo Security Test
+        runs-on:
+          - 'self.hosted'
+          - 'windows'
+        caches:
+          - levo-venv
+          - pip
+        script:
+          - powershell -ExecutionPolicy Bypass -File 'C:/Users/venkat/levo-cli-runner.ps1' test
+        artifacts:
+          - levo-test-output.log
+          - pip-install.log
+
+pipelines:
+  # ============================================================================
+  # Pull Request Pipeline
+  # ============================================================================
+  pull-requests:
+    '**':
+      - step:
+          <<: *security-test
+          name: PR Security Validation
+          deployment: test
+          script:
+            # PR-specific: Only fail on new critical vulnerabilities
+            - cmd /V:ON /C "setlocal EnableDelayedExpansion && set \"FAIL_SCOPE=new\" && set \"FAIL_SEVERITY=critical\" && set \"LEVO_API_KEY=%LEVO_API_KEY%\" && set \"LEVO_ORG_ID=%LEVO_ORG_ID%\" && set \"LEVO_API_URL=%LEVO_API_URL%\" && set \"APP_NAME=%APP_NAME%\" && set \"PYPI_USERNAME=%PYPI_USERNAME%\" && set \"PYPI_PASSWORD=%PYPI_PASSWORD%\" && if \"%LEVO_CLI_VERSION%\" NEQ \"\" (set \"LEVO_CLI_VERSION=%LEVO_CLI_VERSION%\") && powershell -ExecutionPolicy Bypass -File C:\Users\venkat\levo-cli-runner.ps1 test"
+          after-script:
+            - powershell -Command "if (Test-Path 'levo-test-output.log') { Get-Content 'levo-test-output.log' }"
+
+  # ============================================================================
+  # Branch Pipelines
+  # ============================================================================
+  branches:
+    # Main branch
+    main:
+      - step:
+          name: Staging Security Test
+          runs-on:
+            - 'self.hosted'
+            - 'windows'
+          caches:
+            - levo-venv
+            - pip
+          deployment: staging
+          script:
+            - cmd /V:ON /C "setlocal EnableDelayedExpansion && set \"ENVIRONMENT=staging\" && set \"FAIL_SCOPE=new\" && set \"FAIL_SEVERITY=high\" && set \"LEVO_API_KEY=%LEVO_API_KEY%\" && set \"LEVO_ORG_ID=%LEVO_ORG_ID%\" && set \"LEVO_API_URL=%LEVO_API_URL%\" && set \"APP_NAME=%APP_NAME%\" && set \"PYPI_USERNAME=%PYPI_USERNAME%\" && set \"PYPI_PASSWORD=%PYPI_PASSWORD%\" && if \"%LEVO_CLI_VERSION%\" NEQ \"\" (set \"LEVO_CLI_VERSION=%LEVO_CLI_VERSION%\") && powershell -ExecutionPolicy Bypass -File C:\Users\venkat\levo-cli-runner.ps1 test"
+          artifacts:
+            - levo-test-output.log
+            - pip-install.log
+      - step:
+          name: Production Security Test
+          deployment: production
+          trigger: manual
+          runs-on:
+            - 'self.hosted'
+            - 'windows'
+          caches:
+            - levo-venv
+            - pip
+          script:
+            - powershell -ExecutionPolicy Bypass -File 'C:/Users/venkat/levo-cli-runner.ps1' test
+          artifacts:
+            - levo-test-output.log
+            - pip-install.log
+
+    master:
+      - step:
+          <<: *security-test
+          name: Staging Security Test
+          deployment: staging
+          script:
+            - cmd /V:ON /C "setlocal EnableDelayedExpansion && set \"ENVIRONMENT=staging\" && set \"FAIL_SCOPE=new\" && set \"FAIL_SEVERITY=high\" && set \"LEVO_API_KEY=%LEVO_API_KEY%\" && set \"LEVO_ORG_ID=%LEVO_ORG_ID%\" && set \"LEVO_API_URL=%LEVO_API_URL%\" && set \"APP_NAME=%APP_NAME%\" && set \"PYPI_USERNAME=%PYPI_USERNAME%\" && set \"PYPI_PASSWORD=%PYPI_PASSWORD%\" && if \"%LEVO_CLI_VERSION%\" NEQ \"\" (set \"LEVO_CLI_VERSION=%LEVO_CLI_VERSION%\") && powershell -ExecutionPolicy Bypass -File C:\Users\venkat\levo-cli-runner.ps1 test"
+
+  # ============================================================================
+  # Custom Pipelines
+  # ============================================================================
+  custom:
+    # Full security audit - runs all tests, never fails
+    full-security-audit:
+      - step:
+          name: Comprehensive Security Audit
+          runs-on:
+            - 'self.hosted'
+            - 'windows'
+          caches:
+            - levo-venv
+            - pip
+          script:
+            - powershell -ExecutionPolicy Bypass -File 'C:/Users/venkat/levo-cli-runner.ps1' audit
+          artifacts:
+            - levo-test-output.log
+            - pip-install.log
+
+    # Install only - useful for debugging
+    install-levo-cli:
+      - step:
+          name: Install Levo CLI
+          runs-on:
+            - 'self.hosted'
+            - 'windows'
+          caches:
+            - levo-venv
+            - pip
+          script:
+            - powershell -ExecutionPolicy Bypass -File 'C:/Users/venkat/levo-cli-runner.ps1' install
+            - powershell -ExecutionPolicy Bypass -File 'C:/Users/venkat/levo-cli-runner.ps1' version
+          artifacts:
+            - pip-install.log
+
+    # Test specific environment
+    test-environment:
+      - variables:
+          - name: TARGET_ENV
+            default: staging
+            allowed-values:
+              - staging
+              - production
+              - development
+      - step:
+          name: Security Test - $TARGET_ENV
+          runs-on:
+            - 'self.hosted'
+            - 'windows'
+          caches:
+            - levo-venv
+            - pip
+          script:
+            - cmd /V:ON /C "setlocal EnableDelayedExpansion && set \"ENVIRONMENT=$TARGET_ENV\" && set \"LEVO_API_KEY=%LEVO_API_KEY%\" && set \"LEVO_ORG_ID=%LEVO_ORG_ID%\" && set \"LEVO_API_URL=%LEVO_API_URL%\" && set \"APP_NAME=%APP_NAME%\" && set \"PYPI_USERNAME=%PYPI_USERNAME%\" && set \"PYPI_PASSWORD=%PYPI_PASSWORD%\" && if \"%LEVO_CLI_VERSION%\" NEQ \"\" (set \"LEVO_CLI_VERSION=%LEVO_CLI_VERSION%\") && powershell -ExecutionPolicy Bypass -File C:\Users\venkat\levo-cli-runner.ps1 test"
+          artifacts:
+            - levo-test-output.log
+            - pip-install.log
