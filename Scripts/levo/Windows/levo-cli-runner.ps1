@@ -311,7 +311,14 @@ function Install-LevoCli {
     # Reinstall packages with C extensions to fix Windows compilation issues
     Write-Log "Reinstalling packages with C extensions to ensure proper compilation..."
     
-    $cExtensionPackages = @('grpcio', 'orjson', 'cryptography')
+    # Reinstall packages that may have C extension compilation issues on Windows
+    # Note: cryptography version must respect levo's constraints (<43.0.0,>=42.0.0)
+    $cExtensionPackages = @(
+        'grpcio',
+        'orjson',
+        'cryptography>=42.0.0,<43.0.0',  # Respect levo's version constraint
+        'protobuf'
+    )
     foreach ($pkg in $cExtensionPackages) {
         Write-Log "Reinstalling $pkg..."
         $pkgOutput = & python -m pip install --force-reinstall --no-cache-dir $pkg --extra-index-url 'https://pypi.org/simple/' 2>&1
