@@ -12,11 +12,27 @@
 .PARAMETER Command
     The command to execute: install, test, audit, version, help
 
+.PARAMETER AppName
+    Application name (default: auto-detected from git repo or 'default-app')
+
+.PARAMETER Environment
+    Target environment (default: staging)
+
+.PARAMETER TestMethods
+    HTTP methods to test, comma-separated (default: GET,POST)
+
+.PARAMETER FailScope
+    Scope for test failures: new|any|none (default: new)
+
+.PARAMETER FailSeverity
+    Severity threshold for test failures: critical|high|medium|low|none (default: high)
+
 .EXAMPLE
     .\levo-cli-runner.ps1 install
     .\levo-cli-runner.ps1 test
+    .\levo-cli-runner.ps1 test -AppName myapp -Environment production
+    .\levo-cli-runner.ps1 test -Environment production -TestMethods "GET,POST,PUT" -FailSeverity critical
     .\levo-cli-runner.ps1 audit
-    .\levo-cli-runner.ps1 -Command test -Environment production
 
 .NOTES
     Version: 1.0.0
@@ -30,11 +46,6 @@
     Optional Environment Variables:
         LEVOAI_CLI_VERSION  - Specific CLI version (default: latest)
         LEVOAI_BASE_URL     - Custom Levo API URL
-        APP_NAME          - Application name
-        ENVIRONMENT       - Target environment (default: staging)
-        TEST_METHODS      - HTTP methods (default: GET,POST)
-        FAIL_SCOPE        - new|any|none (default: new)
-        FAIL_SEVERITY     - critical|high|medium|low|none (default: high)
 #>
 
 [CmdletBinding()]
@@ -43,11 +54,11 @@ param(
     [ValidateSet('install', 'test', 'audit', 'version', 'help')]
     [string]$Command = 'help',
     
-    [string]$AppName = $env:APP_NAME,
-    [string]$Environment = $env:ENVIRONMENT,
-    [string]$TestMethods = $env:TEST_METHODS,
-    [string]$FailScope = $env:FAIL_SCOPE,
-    [string]$FailSeverity = $env:FAIL_SEVERITY,
+    [string]$AppName,
+    [string]$Environment = 'staging',
+    [string]$TestMethods = 'GET,POST',
+    [string]$FailScope = 'new',
+    [string]$FailSeverity = 'high',
     [string]$VenvDir = '.levo-venv',
     [string]$WorkDir = $PWD
 )
@@ -408,33 +419,33 @@ function Set-TestDefaults {
         Sets default values for test parameters
     #>
     
-    # App name detection
-    if (-not $script:AppName) {
-        $script:AppName = $env:APP_NAME
-    }
-    if (-not $script:AppName -and $env:BITBUCKET_REPO_SLUG) {
-        $script:AppName = $env:BITBUCKET_REPO_SLUG
-    }
-    if (-not $script:AppName -and $env:GITHUB_REPOSITORY) {
-        $script:AppName = Split-Path $env:GITHUB_REPOSITORY -Leaf
-    }
-    if (-not $script:AppName) {
-        try {
-            $gitRoot = & git rev-parse --show-toplevel 2>$null
-            if ($gitRoot) {
-                $script:AppName = Split-Path $gitRoot -Leaf
-            }
-        } catch {}
-    }
-    if (-not $script:AppName) {
-        $script:AppName = 'default-app'
-    }
+    # Assign parameter values to script scope (parameters have defaults except AppName)
+    $script:Environment = $Environment
+    $script:TestMethods = $TestMethods
+    $script:FailScope = $FailScope
+    $script:FailSeverity = $FailSeverity
     
-    # Other defaults
-    if (-not $script:Environment) { $script:Environment = 'staging' }
-    if (-not $script:TestMethods) { $script:TestMethods = 'GET,POST' }
-    if (-not $script:FailScope) { $script:FailScope = 'new' }
-    if (-not $script:FailSeverity) { $script:FailSeverity = 'high' }
+    # App name: use parameter if provided, otherwise auto-detect
+    if ($AppName) {
+        $script:AppName = $AppName
+    } else {
+        # Auto-detect app name from various sources
+        if ($env:BITBUCKET_REPO_SLUG) {
+            $script:AppName = $env:BITBUCKET_REPO_SLUG
+        } elseif ($env:GITHUB_REPOSITORY) {
+            $script:AppName = Split-Path $env:GITHUB_REPOSITORY -Leaf
+        } else {
+            try {
+                $gitRoot = & git rev-parse --show-toplevel 2>$null
+                if ($gitRoot) {
+                    $script:AppName = Split-Path $gitRoot -Leaf
+                }
+            } catch {}
+        }
+        if (-not $script:AppName) {
+            $script:AppName = 'default-app'
+        }
+    }
 }
 
 function Show-TestConfig {
@@ -558,6 +569,18 @@ function Invoke-Help {
     Write-Host "  audit     Run comprehensive audit (never fails build)"
     Write-Host "  version   Show installed Levo CLI version"
     Write-Host "  help      Show this help message"
+    Write-Host ""
+    Write-Host "Parameters:"
+    Write-Host "  -AppName <string>        Application name (default: auto-detected)"
+    Write-Host "  -Environment <string>    Target environment (default: staging)"
+    Write-Host "  -TestMethods <string>    HTTP methods, comma-separated (default: GET,POST)"
+    Write-Host "  -FailScope <string>      new|any|none (default: new)"
+    Write-Host "  -FailSeverity <string>   critical|high|medium|low|none (default: high)"
+    Write-Host ""
+    Write-Host "Examples:"
+    Write-Host "  .\levo-cli-runner.ps1 test"
+    Write-Host "  .\levo-cli-runner.ps1 test -AppName myapp -Environment production"
+    Write-Host "  .\levo-cli-runner.ps1 test -Environment production -FailSeverity critical"
     Write-Host ""
     Write-Host "Required Environment Variables:"
     Write-Host '  $env:LEVOAI_AUTH_KEY      Levo Auth Key'
