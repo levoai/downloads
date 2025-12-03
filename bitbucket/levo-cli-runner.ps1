@@ -22,14 +22,14 @@
     Version: 1.0.0
     
     Required Environment Variables:
-        LEVO_API_KEY      - Levo API key for authentication
-        LEVO_ORG_ID       - Levo organization ID
+        LEVOAI_AUTH_KEY      - Levo Auth key for authentication
+        LEVOAI_ORG_ID       - Levo organization ID
         PYPI_USERNAME     - PyPI username (oauth2accesstoken for GAR)
         PYPI_PASSWORD     - PyPI password (gcloud access token)
     
     Optional Environment Variables:
-        LEVO_CLI_VERSION  - Specific CLI version (default: latest)
-        LEVO_BASE_URL     - Custom Levo API URL
+        LEVOAI_CLI_VERSION  - Specific CLI version (default: latest)
+        LEVOAI_BASE_URL     - Custom Levo API URL
         APP_NAME          - Application name
         ENVIRONMENT       - Target environment (default: staging)
         TEST_METHODS      - HTTP methods (default: GET,POST)
@@ -281,9 +281,9 @@ function Install-LevoCli {
     
     # Build package spec
     $packageSpec = 'levo'
-    if ($env:LEVO_CLI_VERSION) {
-        $packageSpec = "levo==$($env:LEVO_CLI_VERSION)"
-        Write-Log "Installing version: $($env:LEVO_CLI_VERSION)"
+    if ($env:LEVOAI_CLI_VERSION) {
+        $packageSpec = "levo==$($env:LEVOAI_CLI_VERSION)"
+        Write-Log "Installing version: $($env:LEVOAI_CLI_VERSION)"
     } else {
         Write-Log "Installing latest version"
     }
@@ -381,21 +381,21 @@ function Test-Requirements {
     
     $failed = $false
     
-    if (-not $env:LEVO_API_KEY) {
-        Write-Log "LEVO_API_KEY is required but not set" -Level Error
+    if (-not $env:LEVOAI_AUTH_KEY) {
+        Write-Log "LEVOAI_AUTH_KEY is required but not set" -Level Error
         $failed = $true
     }
     
-    if (-not $env:LEVO_ORG_ID) {
-        Write-Log "LEVO_ORG_ID is required but not set" -Level Error
+    if (-not $env:LEVOAI_ORG_ID) {
+        Write-Log "LEVOAI_ORG_ID is required but not set" -Level Error
         $failed = $true
     }
     
     if ($failed) {
         Write-Host ""
         Write-Host "Please set the required environment variables:"
-        Write-Host '  $env:LEVO_API_KEY = "your-api-key"'
-        Write-Host '  $env:LEVO_ORG_ID = "your-org-id"'
+        Write-Host '  $env:LEVOAI_AUTH_KEY = "your-auth-key"'
+        Write-Host '  $env:LEVOAI_ORG_ID = "your-org-id"'
         Write-Host ""
     }
     
@@ -450,7 +450,7 @@ function Show-TestConfig {
     Write-Host "  HTTP Methods:     $script:TestMethods"
     Write-Host "  Fail Scope:       $script:FailScope"
     Write-Host "  Fail Severity:    $script:FailSeverity"
-    $apiUrl = if ($env:LEVO_BASE_URL) { $env:LEVO_BASE_URL } else { 'https://api.levo.ai' }
+    $apiUrl = if ($env:LEVOAI_BASE_URL) { $env:LEVOAI_BASE_URL } else { 'https://api.levo.ai' }
     Write-Host "  API URL:          $apiUrl"
     Write-Host ""
 }
@@ -464,9 +464,9 @@ function Invoke-SecurityTest {
     Write-Log "Running security tests..."
     Write-Log "Output will be saved to: $($Config.LogFile)"
     
-    # Ensure LEVO_BASE_URL is available
-    if (-not $env:LEVO_BASE_URL) {
-        $env:LEVO_BASE_URL = 'https://api.levo.ai'
+    # Ensure LEVOAI_BASE_URL is available
+    if (-not $env:LEVOAI_BASE_URL) {
+        $env:LEVOAI_BASE_URL = 'https://api.levo.ai'
     }
     
     $levoExe = Get-LevoExecutable
@@ -475,9 +475,9 @@ function Invoke-SecurityTest {
     $processArgs = @(
         'remote-test-run'
         '--key'
-        $env:LEVO_API_KEY
+        $env:LEVOAI_AUTH_KEY
         '--organization'
-        $env:LEVO_ORG_ID
+        $env:LEVOAI_ORG_ID
         '--app-name'
         $script:AppName
         '--env'
@@ -560,8 +560,8 @@ function Invoke-Help {
     Write-Host "  help      Show this help message"
     Write-Host ""
     Write-Host "Required Environment Variables:"
-    Write-Host '  $env:LEVO_API_KEY      Levo API key'
-    Write-Host '  $env:LEVO_ORG_ID       Levo organization ID'
+    Write-Host '  $env:LEVOAI_AUTH_KEY      Levo Auth Key'
+    Write-Host '  $env:LEVOAI_ORG_ID       Levo organization ID'
     Write-Host '  $env:PYPI_USERNAME     PyPI username (oauth2accesstoken for GAR)'
     Write-Host '  $env:PYPI_PASSWORD     PyPI password (gcloud access token)'
     Write-Host ""
