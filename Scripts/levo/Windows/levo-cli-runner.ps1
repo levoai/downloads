@@ -29,7 +29,7 @@
     
     Optional Environment Variables:
         LEVO_CLI_VERSION  - Specific CLI version (default: latest)
-        LEVO_API_URL      - Custom Levo API URL
+        LEVO_BASE_URL     - Custom Levo API URL
         APP_NAME          - Application name
         ENVIRONMENT       - Target environment (default: staging)
         TEST_METHODS      - HTTP methods (default: GET,POST)
@@ -445,14 +445,13 @@ function Show-TestConfig {
     
     Write-Host ""
     Write-Host "Test Configuration:" -ForegroundColor Cyan
-    Write-Host "  App Name:         $AppName"
-    Write-Host "  Environment:      $Environment"
-    Write-Host "  HTTP Methods:     $TestMethods"
-    Write-Host "  Fail Scope:       $FailScope"
-    Write-Host "  Fail Severity:    $FailSeverity"
-    if ($env:LEVO_API_URL) {
-        Write-Host "  API URL:          $($env:LEVO_API_URL)"
-    }
+    Write-Host "  App Name:         $script:AppName"
+    Write-Host "  Environment:      $script:Environment"
+    Write-Host "  HTTP Methods:     $script:TestMethods"
+    Write-Host "  Fail Scope:       $script:FailScope"
+    Write-Host "  Fail Severity:    $script:FailSeverity"
+    $apiUrl = if ($env:LEVO_BASE_URL) { $env:LEVO_BASE_URL } else { 'https://api.levo.ai' }
+    Write-Host "  API URL:          $apiUrl"
     Write-Host ""
 }
 
@@ -465,9 +464,9 @@ function Invoke-SecurityTest {
     Write-Log "Running security tests..."
     Write-Log "Output will be saved to: $($Config.LogFile)"
     
-    # Set LEVO_BASE_URL if needed
-    if ($env:LEVO_API_URL) {
-        $env:LEVO_BASE_URL = $env:LEVO_API_URL
+    # Ensure LEVO_BASE_URL is available
+    if (-not $env:LEVO_BASE_URL) {
+        $env:LEVO_BASE_URL = 'https://api.levo.ai'
     }
     
     $levoExe = Get-LevoExecutable
@@ -480,23 +479,29 @@ function Invoke-SecurityTest {
         '--organization'
         $env:LEVO_ORG_ID
         '--app-name'
-        $AppName
+        $script:AppName
         '--env'
-        $Environment
+        $script:Environment
         '--methods'
-        $TestMethods
+        $script:TestMethods
         '--fail-scope'
-        $FailScope
+        $script:FailScope
         '--fail-severity'
-        $FailSeverity
+        $script:FailSeverity
         '--verbosity'
         'INFO'
     )
     
     # Execute and capture output
     # Use call operator with array splatting (@) to prevent wildcard expansion
-    $tempOut = Join-Path $env:TEMP "levo-output-$(Get-Random).txt"
-    $tempErr = Join-Path $env:TEMP "levo-error-$(Get-Random).txt"
+    # Use New-TemporaryFile to guarantee unique filenames (avoids collision risk with Get-Random)
+    $tempOutFile = New-TemporaryFile
+    $tempOut = $tempOutFile.FullName
+    $tempOutFile.Delete()
+    
+    $tempErrFile = New-TemporaryFile
+    $tempErr = $tempErrFile.FullName
+    $tempErrFile.Delete()
     
     try {
         if ($levoExe -eq 'python -m levo') {
@@ -515,9 +520,8 @@ function Invoke-SecurityTest {
         
         $output = Get-Content $tempOut -Raw -ErrorAction SilentlyContinue
         $errorOutput = Get-Content $tempErr -Raw -ErrorAction SilentlyContinue
-        if ($errorOutput) {
-            $output = if ($output) { "$output`n$errorOutput" } else { $errorOutput }
-        }
+        # Explicitly handle all cases: both outputs, only error, or only standard output
+        $output = if ($output -and $errorOutput) { "$output`n$errorOutput" } elseif ($errorOutput) { $errorOutput } else { $output }
         $exitCode = $process.ExitCode
     } finally {
         if (Test-Path $tempOut) { Remove-Item $tempOut -ErrorAction SilentlyContinue }
@@ -546,7 +550,7 @@ function Invoke-SecurityTest {
 function Invoke-Help {
     Write-Banner "Levo CLI Runner v$ScriptVersion"
     
-    Write-Host "Usage: $($MyInvocation.ScriptName) <command>"
+    Write-Host "Usage: $([System.IO.Path]::GetFileName($PSCommandPath)) <command>"
     Write-Host ""
     Write-Host "Commands:"
     Write-Host "  install   Install Levo CLI into virtual environment"
