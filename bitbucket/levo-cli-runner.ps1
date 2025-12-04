@@ -45,7 +45,7 @@
     
     Optional Environment Variables:
         LEVOAI_CLI_VERSION  - Specific CLI version (default: latest)
-        LEVOAI_BASE_URL     - Custom Levo API URL (mapped to LEVO_BASE_URL for levo package)
+        LEVOAI_BASE_URL     - Custom Levo API URL
 #>
 
 [CmdletBinding()]
@@ -606,7 +606,7 @@ function Invoke-Help {
     Write-Host '  $env:PYPI_PASSWORD     PyPI password (gcloud access token)'
     Write-Host ""
     Write-Host "Optional Environment Variables:"
-    Write-Host '  $env:LEVOAI_BASE_URL     Custom Levo API URL (mapped to LEVO_BASE_URL)'
+    Write-Host '  $env:LEVOAI_BASE_URL
     Write-Host ""
     
     return 0
