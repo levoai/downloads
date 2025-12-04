@@ -45,7 +45,7 @@
     
     Optional Environment Variables:
         LEVOAI_CLI_VERSION  - Specific CLI version (default: latest)
-        LEVOAI_BASE_URL     - Custom Levo API URL
+        LEVOAI_BASE_URL     - Custom Levo API URL (mapped to LEVO_BASE_URL for levo package)
 #>
 
 [CmdletBinding()]
@@ -75,6 +75,7 @@ $Colors = @{
 }
 
 # Default configuration
+$DEFAULT_LEVOAI_BASE_URL = 'https://api.levo.ai'
 $Config = @{
     PypiIndexUrl = if ($env:PYPI_INDEX_URL) { $env:PYPI_INDEX_URL } else { 'https://us-python.pkg.dev/levoai/pypi-levo/simple/' }
     MinPythonVersion = [version]'3.12'
@@ -381,6 +382,24 @@ function Get-LevoExecutable {
 }
 
 # ============================================================================
+# Environment Variable Mapping
+# ============================================================================
+
+function Set-LevoEnvironmentVariables {
+    <#
+    .SYNOPSIS
+        Maps LEVOAI_BASE_URL to LEVO_BASE_URL for levo package compatibility
+        Matches the pattern used in levoai-testrunner.sh
+    #>
+    
+    # Read LEVOAI_BASE_URL from environment, use default if not set (matching bash script pattern)
+    $baseUrl = if ($env:LEVOAI_BASE_URL) { $env:LEVOAI_BASE_URL } else { $DEFAULT_LEVOAI_BASE_URL }
+    
+    # Map to LEVO_BASE_URL (levo package expects LEVO_BASE_URL)
+    $env:LEVO_BASE_URL = $baseUrl
+}
+
+# ============================================================================
 # Security Testing
 # ============================================================================
 
@@ -461,7 +480,7 @@ function Show-TestConfig {
     Write-Host "  HTTP Methods:     $script:TestMethods"
     Write-Host "  Fail Scope:       $script:FailScope"
     Write-Host "  Fail Severity:    $script:FailSeverity"
-    $apiUrl = if ($env:LEVOAI_BASE_URL) { $env:LEVOAI_BASE_URL } else { 'https://api.levo.ai' }
+    $apiUrl = if ($env:LEVO_BASE_URL) { $env:LEVO_BASE_URL } else { $DEFAULT_LEVOAI_BASE_URL }
     Write-Host "  API URL:          $apiUrl"
     Write-Host ""
 }
@@ -475,10 +494,8 @@ function Invoke-SecurityTest {
     Write-Log "Running security tests..."
     Write-Log "Output will be saved to: $($Config.LogFile)"
     
-    # Ensure LEVOAI_BASE_URL is available
-    if (-not $env:LEVOAI_BASE_URL) {
-        $env:LEVOAI_BASE_URL = 'https://api.levo.ai'
-    }
+    # Map LEVOAI_BASE_URL to LEVO_BASE_URL for levo package
+    Set-LevoEnvironmentVariables
     
     $levoExe = Get-LevoExecutable
     
@@ -587,6 +604,9 @@ function Invoke-Help {
     Write-Host '  $env:LEVOAI_ORG_ID       Levo organization ID'
     Write-Host '  $env:PYPI_USERNAME     PyPI username (oauth2accesstoken for GAR)'
     Write-Host '  $env:PYPI_PASSWORD     PyPI password (gcloud access token)'
+    Write-Host ""
+    Write-Host "Optional Environment Variables:"
+    Write-Host '  $env:LEVOAI_BASE_URL     Custom Levo API URL (mapped to LEVO_BASE_URL)'
     Write-Host ""
     
     return 0
