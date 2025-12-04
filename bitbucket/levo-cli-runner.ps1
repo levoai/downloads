@@ -45,7 +45,7 @@
     
     Optional Environment Variables:
         LEVOAI_CLI_VERSION  - Specific CLI version (default: latest)
-        LEVOAI_BASE_URL     - Custom Levo API URL (mapped to LEVO_BASE_URL for levo package)
+        LEVOAI_BASE_URL     - Custom Levo API URL
 #>
 
 [CmdletBinding()]
