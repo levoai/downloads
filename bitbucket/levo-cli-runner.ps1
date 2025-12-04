@@ -397,12 +397,6 @@ function Set-LevoEnvironmentVariables {
     
     # Map to LEVO_BASE_URL (levo package expects LEVO_BASE_URL)
     $env:LEVO_BASE_URL = $baseUrl
-    
-    if ($env:LEVOAI_BASE_URL) {
-        Write-Log "Mapped LEVOAI_BASE_URL to LEVO_BASE_URL: $baseUrl"
-    } else {
-        Write-Log "Using default LEVO_BASE_URL: $baseUrl"
-    }
 }
 
 # ============================================================================
