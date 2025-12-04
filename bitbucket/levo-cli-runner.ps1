@@ -606,7 +606,7 @@ function Invoke-Help {
     Write-Host '  $env:PYPI_PASSWORD     PyPI password (gcloud access token)'
     Write-Host ""
     Write-Host "Optional Environment Variables:"
-    Write-Host '  $env:LEVOAI_BASE_URL     Custom Levo API URL (mapped to LEVO_BASE_URL)'
+    Write-Host '  $env:LEVOAI_BASE_URL      Custom Levo API URL'
     Write-Host ""
     
     return 0
