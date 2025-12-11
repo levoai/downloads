@@ -308,7 +308,9 @@ function Install-LevoCli {
         $packageSpec,
         '--index-url', $indexUrl,
         '--extra-index-url', 'https://pypi.org/simple/',
-        '--trusted-host', 'us-python.pkg.dev'
+        '--trusted-host', 'us-python.pkg.dev',
+        '--trusted-host', 'pypi.org',
+        '--trusted-host', 'files.pythonhosted.org'  # Also needed for PyPI downloads
     )
     
     $output = & python @pipArgs 2>&1
@@ -333,7 +335,7 @@ function Install-LevoCli {
     )
     foreach ($pkg in $cExtensionPackages) {
         Write-Log "Reinstalling $pkg..."
-        $pkgOutput = & python -m pip install --force-reinstall --no-cache-dir $pkg --extra-index-url 'https://pypi.org/simple/' 2>&1
+        $pkgOutput = & python -m pip install --force-reinstall --no-cache-dir $pkg --extra-index-url 'https://pypi.org/simple/' --trusted-host 'pypi.org' --trusted-host 'files.pythonhosted.org' 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Log "Warning: $pkg reinstall had issues, but continuing..." -Level Warning
         }
