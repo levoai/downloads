@@ -27,12 +27,40 @@
 .PARAMETER FailSeverity
     Severity threshold for test failures: critical|high|medium|low|none (default: high)
 
+.PARAMETER DataSource
+    Data source to use: 'Test User Data' or 'Traces' (default: Test User Data)
+
+.PARAMETER RunOn
+    Where to run tests: 'cloud' or 'on-prem' (default: cloud)
+
+.PARAMETER TargetUrl
+    Target URL for the test run (required)
+
+.PARAMETER TestUsers
+    Comma-separated test user names (optional, only for Test User Data data source)
+
+.PARAMETER ExcludeMethods
+    HTTP methods to exclude, comma-separated (mutually exclusive with TestMethods)
+
+.PARAMETER EndpointPattern
+    Regex pattern to match endpoints to be tested (optional)
+
+.PARAMETER ExcludeEndpointPattern
+    Regex pattern to exclude endpoints from testing (optional)
+
+.PARAMETER Categories
+    Security test categories, comma-separated (optional)
+
+.PARAMETER FailThreshold
+    Fail if vulnerability count exceeds this threshold (optional)
+
 .EXAMPLE
     .\levo-cli-runner.ps1 install
-    .\levo-cli-runner.ps1 test
-    .\levo-cli-runner.ps1 test -AppName myapp -Environment production
-    .\levo-cli-runner.ps1 test -Environment production -TestMethods "GET,POST,PUT" -FailSeverity critical
-    .\levo-cli-runner.ps1 audit
+    .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com
+    .\levo-cli-runner.ps1 test -AppName myapp -Environment production -TargetUrl https://api.example.com
+    .\levo-cli-runner.ps1 test -Environment production -DataSource Traces -RunOn cloud -TargetUrl https://api.example.com
+    .\levo-cli-runner.ps1 test -DataSource 'Test User Data' -TestUsers 'Victim1,Victim2' -TargetUrl https://api.example.com
+    .\levo-cli-runner.ps1 audit -TargetUrl https://api.example.com
 
 .NOTES
     Version: 1.0.0
@@ -56,9 +84,18 @@ param(
     
     [string]$AppName,
     [string]$Environment = 'staging',
-    [string]$TestMethods = 'GET,POST',
+    [string]$TestMethods = '',
     [string]$FailScope = 'new',
     [string]$FailSeverity = 'high',
+    [string]$DataSource = 'Test User Data',
+    [string]$RunOn = 'cloud',
+    [string]$TargetUrl = '',
+    [string]$TestUsers = '',
+    [string]$ExcludeMethods = '',
+    [string]$EndpointPattern = '',
+    [string]$ExcludeEndpointPattern = '',
+    [string]$Categories = '',
+    [int]$FailThreshold = 0,
     [string]$VenvDir = '.levo-venv',
     [string]$WorkDir = $PWD
 )
@@ -308,7 +345,9 @@ function Install-LevoCli {
         $packageSpec,
         '--index-url', $indexUrl,
         '--extra-index-url', 'https://pypi.org/simple/',
-        '--trusted-host', 'us-python.pkg.dev'
+        '--trusted-host', 'us-python.pkg.dev',
+        '--trusted-host', 'pypi.org',
+        '--trusted-host', 'files.pythonhosted.org'  # Also needed for PyPI downloads
     )
     
     $output = & python @pipArgs 2>&1
@@ -333,7 +372,7 @@ function Install-LevoCli {
     )
     foreach ($pkg in $cExtensionPackages) {
         Write-Log "Reinstalling $pkg..."
-        $pkgOutput = & python -m pip install --force-reinstall --no-cache-dir $pkg --extra-index-url 'https://pypi.org/simple/' 2>&1
+        $pkgOutput = & python -m pip install --force-reinstall --no-cache-dir $pkg --extra-index-url 'https://pypi.org/simple/' --trusted-host 'pypi.org' --trusted-host 'files.pythonhosted.org' 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Log "Warning: $pkg reinstall had issues, but continuing..." -Level Warning
         }
@@ -406,7 +445,7 @@ function Set-LevoEnvironmentVariables {
 function Test-Requirements {
     <#
     .SYNOPSIS
-        Validates required environment variables
+        Validates required environment variables and parameters
     #>
     
     $failed = $false
@@ -421,11 +460,33 @@ function Test-Requirements {
         $failed = $true
     }
     
+    if (-not $script:TargetUrl) {
+        Write-Log "TargetUrl parameter is required but not set" -Level Error
+        $failed = $true
+    }
+    
+    if ($script:DataSource -notin @('Test User Data', 'Traces')) {
+        Write-Log "DataSource must be 'Test User Data' or 'Traces'" -Level Error
+        $failed = $true
+    }
+    
+    if ($script:RunOn -notin @('cloud', 'on-prem')) {
+        Write-Log "RunOn must be 'cloud' or 'on-prem'" -Level Error
+        $failed = $true
+    }
+    
+    # Validate mutually exclusive parameters
+    if ($script:TestMethods -and $script:ExcludeMethods) {
+        Write-Log "TestMethods and ExcludeMethods cannot be used together" -Level Error
+        $failed = $true
+    }
+    
     if ($failed) {
         Write-Host ""
-        Write-Host "Please set the required environment variables:"
+        Write-Host "Please set the required environment variables and parameters:"
         Write-Host '  $env:LEVOAI_AUTH_KEY = "your-auth-key"'
         Write-Host '  $env:LEVOAI_ORG_ID = "your-org-id"'
+        Write-Host '  -TargetUrl "https://api.example.com"'
         Write-Host ""
     }
     
@@ -438,11 +499,20 @@ function Set-TestDefaults {
         Sets default values for test parameters
     #>
     
-    # Assign parameter values to script scope (parameters have defaults except AppName)
+    # Assign parameter values to script scope (parameters have defaults except AppName and TargetUrl)
     $script:Environment = $Environment
     $script:TestMethods = $TestMethods
     $script:FailScope = $FailScope
     $script:FailSeverity = $FailSeverity
+    $script:DataSource = $DataSource
+    $script:RunOn = $RunOn
+    $script:TargetUrl = $TargetUrl
+    $script:TestUsers = $TestUsers
+    $script:ExcludeMethods = $ExcludeMethods
+    $script:EndpointPattern = $EndpointPattern
+    $script:ExcludeEndpointPattern = $ExcludeEndpointPattern
+    $script:Categories = $Categories
+    $script:FailThreshold = $FailThreshold
     
     # App name: use parameter if provided, otherwise auto-detect
     if ($AppName) {
@@ -477,9 +547,32 @@ function Show-TestConfig {
     Write-Host "Test Configuration:" -ForegroundColor Cyan
     Write-Host "  App Name:         $script:AppName"
     Write-Host "  Environment:      $script:Environment"
-    Write-Host "  HTTP Methods:     $script:TestMethods"
+    Write-Host "  Data Source:      $script:DataSource"
+    Write-Host "  Run On:           $script:RunOn"
+    Write-Host "  Target URL:       $script:TargetUrl"
+    if ($script:TestUsers) {
+        Write-Host "  Test Users:       $script:TestUsers"
+    }
+    if ($script:TestMethods) {
+        Write-Host "  HTTP Methods:     $script:TestMethods"
+    }
+    if ($script:ExcludeMethods) {
+        Write-Host "  Exclude Methods:  $script:ExcludeMethods"
+    }
+    if ($script:EndpointPattern) {
+        Write-Host "  Endpoint Pattern: $script:EndpointPattern"
+    }
+    if ($script:ExcludeEndpointPattern) {
+        Write-Host "  Exclude Endpoint Pattern: $script:ExcludeEndpointPattern"
+    }
+    if ($script:Categories) {
+        Write-Host "  Categories:       $script:Categories"
+    }
     Write-Host "  Fail Scope:       $script:FailScope"
     Write-Host "  Fail Severity:    $script:FailSeverity"
+    if ($script:FailThreshold -gt 0) {
+        Write-Host "  Fail Threshold:   $script:FailThreshold"
+    }
     $apiUrl = if ($env:LEVO_BASE_URL) { $env:LEVO_BASE_URL } else { $DEFAULT_LEVOAI_BASE_URL }
     Write-Host "  API URL:          $apiUrl"
     Write-Host ""
@@ -510,15 +603,63 @@ function Invoke-SecurityTest {
         $script:AppName
         '--env'
         $script:Environment
-        '--methods'
-        $script:TestMethods
+        '--data-source'
+        $script:DataSource
+        '--run-on'
+        $script:RunOn
+        '--target-url'
+        $script:TargetUrl
         '--fail-scope'
         $script:FailScope
         '--fail-severity'
         $script:FailSeverity
-        '--verbosity'
-        'INFO'
     )
+    
+    # Add methods or exclude-methods (mutually exclusive)
+    if ($script:TestMethods) {
+        $processArgs += '--methods'
+        $processArgs += $script:TestMethods
+    } elseif ($script:ExcludeMethods) {
+        $processArgs += '--exclude-methods'
+        $processArgs += $script:ExcludeMethods
+    } else {
+        # Default behavior when neither is specified (backward compatibility)
+        $processArgs += '--methods'
+        $processArgs += 'GET,POST'
+    }
+    
+    # Add endpoint patterns if provided
+    if ($script:EndpointPattern) {
+        $processArgs += '--endpoint-pattern'
+        $processArgs += $script:EndpointPattern
+    }
+    
+    if ($script:ExcludeEndpointPattern) {
+        $processArgs += '--exclude-endpoint-pattern'
+        $processArgs += $script:ExcludeEndpointPattern
+    }
+    
+    # Add categories if provided
+    if ($script:Categories) {
+        $processArgs += '--categories'
+        $processArgs += $script:Categories
+    }
+    
+    # Add fail-threshold if provided
+    if ($script:FailThreshold -gt 0) {
+        $processArgs += '--fail-threshold'
+        $processArgs += $script:FailThreshold
+    }
+    
+    # Add test-users only if provided and data source is Test User Data
+    if ($script:TestUsers -and $script:DataSource -eq 'Test User Data') {
+        $processArgs += '--test-users'
+        $processArgs += $script:TestUsers
+    }
+    
+    # Add verbosity at the end
+    $processArgs += '--verbosity'
+    $processArgs += 'INFO'
     
     # Execute and capture output
     # Use call operator with array splatting (@) to prevent wildcard expansion
@@ -590,14 +731,26 @@ function Invoke-Help {
     Write-Host "Parameters:"
     Write-Host "  -AppName <string>        Application name (default: auto-detected)"
     Write-Host "  -Environment <string>    Target environment (default: staging)"
-    Write-Host "  -TestMethods <string>    HTTP methods, comma-separated (default: GET,POST)"
+    Write-Host "  -DataSource <string>     Data source: 'Test User Data' or 'Traces' (default: Test User Data)"
+    Write-Host "  -RunOn <string>          Where to run: 'cloud' or 'on-prem' (default: cloud)"
+    Write-Host "  -TargetUrl <string>      Target URL for the test run (required)"
+    Write-Host "  -TestUsers <string>      Comma-separated test user names (optional, only for Test User Data)"
+    Write-Host "  -TestMethods <string>    HTTP methods to include, comma-separated (default: GET,POST, mutually exclusive with ExcludeMethods)"
+    Write-Host "  -ExcludeMethods <string> HTTP methods to exclude, comma-separated (mutually exclusive with TestMethods)"
+    Write-Host "  -EndpointPattern <string> Regex pattern to match endpoints to be tested (optional)"
+    Write-Host "  -ExcludeEndpointPattern <string> Regex pattern to exclude endpoints from testing (optional)"
+    Write-Host "  -Categories <string>    Security test categories, comma-separated (optional)"
     Write-Host "  -FailScope <string>      new|any|none (default: new)"
     Write-Host "  -FailSeverity <string>   critical|high|medium|low|none (default: high)"
+    Write-Host "  -FailThreshold <int>     Fail if vulnerability count exceeds this threshold (optional)"
     Write-Host ""
     Write-Host "Examples:"
-    Write-Host "  .\levo-cli-runner.ps1 test"
-    Write-Host "  .\levo-cli-runner.ps1 test -AppName myapp -Environment production"
-    Write-Host "  .\levo-cli-runner.ps1 test -Environment production -FailSeverity critical"
+    Write-Host "  .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com"
+    Write-Host "  .\levo-cli-runner.ps1 test -AppName myapp -Environment production -TargetUrl https://api.example.com"
+    Write-Host "  .\levo-cli-runner.ps1 test -Environment production -DataSource Traces -RunOn cloud -TargetUrl https://api.example.com"
+    Write-Host "  .\levo-cli-runner.ps1 test -DataSource 'Test User Data' -TestUsers 'Victim1,Victim2' -TargetUrl https://api.example.com"
+    Write-Host "  .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com -ExcludeMethods 'DELETE,PUT' -Categories 'CORS,FUZZING'"
+    Write-Host "  .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com -EndpointPattern '^/api/v1/.*' -FailThreshold 10"
     Write-Host ""
     Write-Host "Required Environment Variables:"
     Write-Host '  $env:LEVOAI_AUTH_KEY      Levo Auth Key'
