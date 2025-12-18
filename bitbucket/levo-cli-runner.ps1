@@ -28,7 +28,7 @@
     Severity threshold for test failures: critical|high|medium|low|none (default: high)
 
 .PARAMETER DataSource
-    Data source to use: 'Test User Data' or 'Traces' (default: Test User Data)
+    Data source to use: 'TestUserData' or 'Traces' (default: TestUserData)
 
 .PARAMETER RunOn
     Where to run tests: 'cloud' or 'on-prem' (default: cloud)
@@ -37,7 +37,7 @@
     Target URL for the test run (required)
 
 .PARAMETER TestUsers
-    Comma-separated test user names (optional, only for Test User Data data source)
+    Comma-separated test user names (optional, only for TestUserData data source)
 
 .PARAMETER ExcludeMethods
     HTTP methods to exclude, comma-separated (mutually exclusive with TestMethods)
@@ -59,7 +59,7 @@
     .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com
     .\levo-cli-runner.ps1 test -AppName myapp -Environment production -TargetUrl https://api.example.com
     .\levo-cli-runner.ps1 test -Environment production -DataSource Traces -RunOn cloud -TargetUrl https://api.example.com
-    .\levo-cli-runner.ps1 test -DataSource 'Test User Data' -TestUsers 'Victim1,Victim2' -TargetUrl https://api.example.com
+    .\levo-cli-runner.ps1 test -DataSource 'TestUserData' -TestUsers 'Victim1,Victim2' -TargetUrl https://api.example.com
     .\levo-cli-runner.ps1 audit -TargetUrl https://api.example.com
 
 .NOTES
@@ -87,7 +87,7 @@ param(
     [string]$TestMethods = '',
     [string]$FailScope = 'new',
     [string]$FailSeverity = 'high',
-    [string]$DataSource = 'Test User Data',
+    [string]$DataSource = 'TestUserData',
     [string]$RunOn = 'cloud',
     [string]$TargetUrl = '',
     [string]$TestUsers = '',
@@ -465,8 +465,8 @@ function Test-Requirements {
         $failed = $true
     }
     
-    if ($script:DataSource -notin @('Test User Data', 'Traces')) {
-        Write-Log "DataSource must be 'Test User Data' or 'Traces'" -Level Error
+    if ($script:DataSource -notin @('TestUserData', 'Test User Data', 'Traces')) {
+        Write-Log "DataSource must be 'TestUserData' or 'Traces'" -Level Error
         $failed = $true
     }
     
@@ -593,6 +593,7 @@ function Invoke-SecurityTest {
     $levoExe = Get-LevoExecutable
     
     # Build command arguments as a flat array
+    # PowerShell arrays with Start-Process should handle spaces, but we'll build it carefully
     $processArgs = @(
         'remote-test-run'
         '--key'
@@ -604,7 +605,7 @@ function Invoke-SecurityTest {
         '--env'
         $script:Environment
         '--data-source'
-        $script:DataSource
+        $script:DataSource  # "TestUserData" (no spaces)
         '--run-on'
         $script:RunOn
         '--target-url'
@@ -651,8 +652,8 @@ function Invoke-SecurityTest {
         $processArgs += $script:FailThreshold
     }
     
-    # Add test-users only if provided and data source is Test User Data
-    if ($script:TestUsers -and $script:DataSource -eq 'Test User Data') {
+    # Add test-users only if provided and data source is TestUserData
+    if ($script:TestUsers -and $script:DataSource -eq 'TestUserData') {
         $processArgs += '--test-users'
         $processArgs += $script:TestUsers
     }
@@ -662,7 +663,6 @@ function Invoke-SecurityTest {
     $processArgs += 'INFO'
     
     # Execute and capture output
-    # Use call operator with array splatting (@) to prevent wildcard expansion
     # Use New-TemporaryFile to guarantee unique filenames (avoids collision risk with Get-Random)
     $tempOutFile = New-TemporaryFile
     $tempOut = $tempOutFile.FullName
@@ -673,26 +673,32 @@ function Invoke-SecurityTest {
     $tempErrFile.Delete()
     
     try {
+        # Build complete argument list
         if ($levoExe -eq 'python -m levo') {
-            $process = Start-Process -FilePath 'python' `
-                -ArgumentList @('-m', 'levo') + $processArgs `
-                -NoNewWindow -Wait -PassThru `
-                -RedirectStandardOutput $tempOut `
-                -RedirectStandardError $tempErr
+            $allArgs = @('-m', 'levo') + $processArgs
+            $exePath = 'python'
         } else {
-            $process = Start-Process -FilePath $levoExe `
-                -ArgumentList $processArgs `
-                -NoNewWindow -Wait -PassThru `
-                -RedirectStandardOutput $tempOut `
-                -RedirectStandardError $tempErr
+            $allArgs = $processArgs
+            $exePath = $levoExe
         }
+        
+        $process = Start-Process -FilePath $exePath `
+            -ArgumentList $allArgs `
+            -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $tempOut `
+            -RedirectStandardError $tempErr
         
         $output = Get-Content $tempOut -Raw -ErrorAction SilentlyContinue
         $errorOutput = Get-Content $tempErr -Raw -ErrorAction SilentlyContinue
         # Explicitly handle all cases: both outputs, only error, or only standard output
         $output = if ($output -and $errorOutput) { "$output`n$errorOutput" } elseif ($errorOutput) { $errorOutput } else { $output }
         $exitCode = $process.ExitCode
+    } catch {
+        Write-Log "Error executing command: $_" -Level Error
+        $output = $_.Exception.Message
+        $exitCode = 1
     } finally {
+        # Clean up temp files
         if (Test-Path $tempOut) { Remove-Item $tempOut -ErrorAction SilentlyContinue }
         if (Test-Path $tempErr) { Remove-Item $tempErr -ErrorAction SilentlyContinue }
     }
@@ -731,10 +737,10 @@ function Invoke-Help {
     Write-Host "Parameters:"
     Write-Host "  -AppName <string>        Application name (default: auto-detected)"
     Write-Host "  -Environment <string>    Target environment (default: staging)"
-    Write-Host "  -DataSource <string>     Data source: 'Test User Data' or 'Traces' (default: Test User Data)"
+    Write-Host "  -DataSource <string>     Data source: 'TestUserData' or 'Traces' (default: TestUserData)"
     Write-Host "  -RunOn <string>          Where to run: 'cloud' or 'on-prem' (default: cloud)"
     Write-Host "  -TargetUrl <string>      Target URL for the test run (required)"
-    Write-Host "  -TestUsers <string>      Comma-separated test user names (optional, only for Test User Data)"
+    Write-Host "  -TestUsers <string>      Comma-separated test user names (optional, only for TestUserData)"
     Write-Host "  -TestMethods <string>    HTTP methods to include, comma-separated (default: GET,POST, mutually exclusive with ExcludeMethods)"
     Write-Host "  -ExcludeMethods <string> HTTP methods to exclude, comma-separated (mutually exclusive with TestMethods)"
     Write-Host "  -EndpointPattern <string> Regex pattern to match endpoints to be tested (optional)"
@@ -748,7 +754,7 @@ function Invoke-Help {
     Write-Host "  .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com"
     Write-Host "  .\levo-cli-runner.ps1 test -AppName myapp -Environment production -TargetUrl https://api.example.com"
     Write-Host "  .\levo-cli-runner.ps1 test -Environment production -DataSource Traces -RunOn cloud -TargetUrl https://api.example.com"
-    Write-Host "  .\levo-cli-runner.ps1 test -DataSource 'Test User Data' -TestUsers 'Victim1,Victim2' -TargetUrl https://api.example.com"
+    Write-Host "  .\levo-cli-runner.ps1 test -DataSource 'TestUserData' -TestUsers 'Victim1,Victim2' -TargetUrl https://api.example.com"
     Write-Host "  .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com -ExcludeMethods 'DELETE,PUT' -Categories 'CORS,FUZZING'"
     Write-Host "  .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com -EndpointPattern '^/api/v1/.*' -FailThreshold 10"
     Write-Host ""
