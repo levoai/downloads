@@ -84,7 +84,7 @@ param(
     
     [string]$AppName,
     [string]$Environment = 'staging',
-    [string]$TestMethods = 'GET,POST',
+    [string]$TestMethods = '',
     [string]$FailScope = 'new',
     [string]$FailSeverity = 'high',
     [string]$DataSource = 'Test User Data',
@@ -622,6 +622,10 @@ function Invoke-SecurityTest {
     } elseif ($script:ExcludeMethods) {
         $processArgs += '--exclude-methods'
         $processArgs += $script:ExcludeMethods
+    } else {
+        # Default behavior when neither is specified (backward compatibility)
+        $processArgs += '--methods'
+        $processArgs += 'GET,POST'
     }
     
     # Add endpoint patterns if provided
