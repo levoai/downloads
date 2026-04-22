@@ -323,98 +323,115 @@ function Install-LevoCli {
     #   1. LEVOAI_GAR_SA_KEY_B64 -> keyring helper (auto-refresh, no gcloud).
     #   2. PYPI_USERNAME/PYPI_PASSWORD -> legacy URL-embedded credentials.
     $indexUrl = $Config.PypiIndexUrl
-    $useKeyring = $false
+    $saKeyPath = $null
+    $usedGarKey = $false
+    $previousGoogleApplicationCredentials = [Environment]::GetEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', 'Process')
+    $hadPreviousGoogleApplicationCredentials = $null -ne $previousGoogleApplicationCredentials
 
-    if ($env:LEVOAI_GAR_SA_KEY_B64) {
-        $saKeyPath = Join-Path $Config.VenvPath 'gar-sa-key.json'
-        try {
-            $keyBytes = [Convert]::FromBase64String($env:LEVOAI_GAR_SA_KEY_B64.Trim())
-            [System.IO.File]::WriteAllBytes($saKeyPath, $keyBytes)
-        } catch {
-            Write-Log "Failed to decode LEVOAI_GAR_SA_KEY_B64: $_" -Level Error
+    try {
+        if ($env:LEVOAI_GAR_SA_KEY_B64) {
+            $usedGarKey = $true
+            $saKeyPath = Join-Path ([System.IO.Path]::GetTempPath()) ("gar-sa-key-{0}.json" -f ([System.Guid]::NewGuid().ToString('N')))
+            try {
+                $keyBytes = [Convert]::FromBase64String($env:LEVOAI_GAR_SA_KEY_B64.Trim())
+                [System.IO.File]::WriteAllBytes($saKeyPath, $keyBytes)
+            } catch {
+                Write-Log "Failed to decode LEVOAI_GAR_SA_KEY_B64: $_" -Level Error
+                return $false
+            }
+            [Environment]::SetEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', $saKeyPath, 'Process')
+
+            Write-Log "Installing keyrings.google-artifactregistry-auth..."
+            $keyringOutput = & python -m pip install --no-cache-dir keyrings.google-artifactregistry-auth 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "Failed to install keyring helper" -Level Error
+                Write-Host $keyringOutput -ForegroundColor Red
+                return $false
+            }
+            Write-Log "Using GAR service account key via keyring helper" -Level Success
+        } elseif ($env:PYPI_USERNAME) {
+            if (-not $env:PYPI_PASSWORD) {
+                Write-Log "PYPI_PASSWORD is required when PYPI_USERNAME is set" -Level Error
+                return $false
+            }
+
+            # Construct authenticated URL
+            $indexUrl = "https://$($env:PYPI_USERNAME):$($env:PYPI_PASSWORD)@us-python.pkg.dev/levoai/pypi-levo/simple/"
+            Write-Log "Using authenticated repository (URL-embedded credentials)"
+        } else {
+            Write-Log "No Artifact Registry credentials configured." -Level Error
+            Write-Log "Set ONE of the following before running install/test:" -Level Error
+            Write-Log '  $env:LEVOAI_GAR_SA_KEY_B64 = "<base64 SA key>"   (recommended)' -Level Error
+            Write-Log '  -- or --' -Level Error
+            Write-Log '  $env:PYPI_USERNAME = "oauth2accesstoken"; $env:PYPI_PASSWORD = "<ya29 token>"' -Level Error
             return $false
         }
-        $env:GOOGLE_APPLICATION_CREDENTIALS = $saKeyPath
-
-        Write-Log "Installing keyrings.google-artifactregistry-auth..."
-        $keyringOutput = & python -m pip install --no-cache-dir keyrings.google-artifactregistry-auth 2>&1
+        
+        # Build package spec
+        $packageSpec = 'levo'
+        if ($env:LEVOAI_CLI_VERSION) {
+            $packageSpec = "levo==$($env:LEVOAI_CLI_VERSION)"
+            Write-Log "Installing version: $($env:LEVOAI_CLI_VERSION)"
+        } else {
+            Write-Log "Installing latest version"
+        }
+        
+        # Run pip install
+        Write-Log "Running pip install..."
+        
+        $pipArgs = @(
+            '-m', 'pip', 'install', '--no-cache-dir',
+            $packageSpec,
+            '--index-url', $indexUrl,
+            '--extra-index-url', 'https://pypi.org/simple/',
+            '--trusted-host', 'us-python.pkg.dev',
+            '--trusted-host', 'pypi.org',
+            '--trusted-host', 'files.pythonhosted.org'  # Also needed for PyPI downloads
+        )
+        
+        $output = & python @pipArgs 2>&1
+        $output | Out-File -FilePath $Config.PipLogFile -Encoding UTF8
+        
         if ($LASTEXITCODE -ne 0) {
-            Write-Log "Failed to install keyring helper" -Level Error
-            Write-Host $keyringOutput -ForegroundColor Red
+            Write-Log "pip install failed. See $($Config.PipLogFile) for details" -Level Error
+            Write-Host $output -ForegroundColor Red
             return $false
         }
-        $useKeyring = $true
-        Write-Log "Using GAR service account key via keyring helper" -Level Success
-    } elseif ($env:PYPI_USERNAME) {
-        if (-not $env:PYPI_PASSWORD) {
-            Write-Log "PYPI_PASSWORD is required when PYPI_USERNAME is set" -Level Error
-            return $false
+        
+        # Reinstall packages with C extensions to fix Windows compilation issues
+        Write-Log "Reinstalling packages with C extensions to ensure proper compilation..."
+        
+        # Reinstall packages that may have C extension compilation issues on Windows
+        # Note: cryptography version must respect levo's constraints (<43.0.0,>=42.0.0)
+        $cExtensionPackages = @(
+            'grpcio',
+            'orjson',
+            'cryptography>=42.0.0,<43.0.0',  # Respect levo's version constraint
+            'protobuf'
+        )
+        foreach ($pkg in $cExtensionPackages) {
+            Write-Log "Reinstalling $pkg..."
+            $pkgOutput = & python -m pip install --force-reinstall --no-cache-dir $pkg --extra-index-url 'https://pypi.org/simple/' --trusted-host 'pypi.org' --trusted-host 'files.pythonhosted.org' 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "Warning: $pkg reinstall had issues, but continuing..." -Level Warning
+            }
         }
+        
+        Write-Log "Levo CLI installed" -Level Success
+        return $true
+    } finally {
+        if ($usedGarKey) {
+            if ($hadPreviousGoogleApplicationCredentials) {
+                [Environment]::SetEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', $previousGoogleApplicationCredentials, 'Process')
+            } else {
+                [Environment]::SetEnvironmentVariable('GOOGLE_APPLICATION_CREDENTIALS', $null, 'Process')
+            }
 
-        # Construct authenticated URL
-        $indexUrl = "https://$($env:PYPI_USERNAME):$($env:PYPI_PASSWORD)@us-python.pkg.dev/levoai/pypi-levo/simple/"
-        Write-Log "Using authenticated repository (URL-embedded credentials)"
-    } else {
-        Write-Log "No Artifact Registry credentials configured." -Level Error
-        Write-Log "Set ONE of the following before running install/test:" -Level Error
-        Write-Log '  $env:LEVOAI_GAR_SA_KEY_B64 = "<base64 SA key>"   (recommended)' -Level Error
-        Write-Log '  -- or --' -Level Error
-        Write-Log '  $env:PYPI_USERNAME = "oauth2accesstoken"; $env:PYPI_PASSWORD = "<ya29 token>"' -Level Error
-        return $false
-    }
-    
-    # Build package spec
-    $packageSpec = 'levo'
-    if ($env:LEVOAI_CLI_VERSION) {
-        $packageSpec = "levo==$($env:LEVOAI_CLI_VERSION)"
-        Write-Log "Installing version: $($env:LEVOAI_CLI_VERSION)"
-    } else {
-        Write-Log "Installing latest version"
-    }
-    
-    # Run pip install
-    Write-Log "Running pip install..."
-    
-    $pipArgs = @(
-        '-m', 'pip', 'install', '--no-cache-dir',
-        $packageSpec,
-        '--index-url', $indexUrl,
-        '--extra-index-url', 'https://pypi.org/simple/',
-        '--trusted-host', 'us-python.pkg.dev',
-        '--trusted-host', 'pypi.org',
-        '--trusted-host', 'files.pythonhosted.org'  # Also needed for PyPI downloads
-    )
-    
-    $output = & python @pipArgs 2>&1
-    $output | Out-File -FilePath $Config.PipLogFile -Encoding UTF8
-    
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log "pip install failed. See $($Config.PipLogFile) for details" -Level Error
-        Write-Host $output -ForegroundColor Red
-        return $false
-    }
-    
-    # Reinstall packages with C extensions to fix Windows compilation issues
-    Write-Log "Reinstalling packages with C extensions to ensure proper compilation..."
-    
-    # Reinstall packages that may have C extension compilation issues on Windows
-    # Note: cryptography version must respect levo's constraints (<43.0.0,>=42.0.0)
-    $cExtensionPackages = @(
-        'grpcio',
-        'orjson',
-        'cryptography>=42.0.0,<43.0.0',  # Respect levo's version constraint
-        'protobuf'
-    )
-    foreach ($pkg in $cExtensionPackages) {
-        Write-Log "Reinstalling $pkg..."
-        $pkgOutput = & python -m pip install --force-reinstall --no-cache-dir $pkg --extra-index-url 'https://pypi.org/simple/' --trusted-host 'pypi.org' --trusted-host 'files.pythonhosted.org' 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Log "Warning: $pkg reinstall had issues, but continuing..." -Level Warning
+            if ($saKeyPath -and (Test-Path -LiteralPath $saKeyPath)) {
+                Remove-Item -LiteralPath $saKeyPath -Force -ErrorAction SilentlyContinue
+            }
         }
     }
-    
-    Write-Log "Levo CLI installed" -Level Success
-    return $true
 }
 
 function Test-LevoInstallation {
@@ -825,18 +842,50 @@ function Invoke-Version {
     if (-not (Find-Python)) { return 1 }
     if (-not (Initialize-Venv)) { return 1 }
     if (-not (Enter-Venv)) { return 1 }
+    Set-LevoEnvironmentVariables
     
     Write-Host ""
     Write-Host "Levo CLI Version:" -ForegroundColor Cyan
     
     $levoExe = Get-LevoExecutable
-    if ($levoExe -eq 'python -m levo') {
-        & python -m levo --version
-    } else {
-        & $levoExe --version
+    $versionText = ""
+    $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+
+    try {
+        # Avoid surfacing stderr from unsupported flags as PowerShell errors.
+        $PSNativeCommandUseErrorActionPreference = $false
+
+        # Some levo builds don't support `version`, so use --version only.
+        if ($levoExe -eq 'python -m levo') {
+            $versionText = (& python -m levo --version 2>$null | Out-String).Trim()
+        } else {
+            $versionText = (& $levoExe --version 2>$null | Out-String).Trim()
+        }
+
+        # Treat non-zero exits and usage/help text as "no version output".
+        if ($LASTEXITCODE -ne 0 -or $versionText -match 'Usage:\s*levo|No such command') {
+            $versionText = ""
+        }
+    } finally {
+        $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
     }
-    
-    return $LASTEXITCODE
+
+    if (-not $versionText) {
+        # Final fallback: read installed package version from pip metadata.
+        $pipShow = (& python -m pip show levo 2>&1 | Out-String).Trim()
+        $versionLine = ($pipShow -split "`r?`n" | Where-Object { $_ -match '^Version:\s+' } | Select-Object -First 1)
+        if ($versionLine) {
+            $versionText = $versionLine -replace '^Version:\s+', ''
+        }
+    }
+
+    if ($versionText) {
+        Write-Host "  $versionText"
+        return 0
+    }
+
+    Write-Log "Could not determine Levo CLI version" -Level Error
+    return 1
 }
 
 function Invoke-Test {
