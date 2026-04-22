@@ -67,10 +67,17 @@
     
     Required Environment Variables:
         LEVOAI_AUTH_KEY      - Levo Auth key for authentication
-        LEVOAI_ORG_ID       - Levo organization ID
-        PYPI_USERNAME     - PyPI username (oauth2accesstoken for GAR)
-        PYPI_PASSWORD     - PyPI password (gcloud access token)
-    
+        LEVOAI_ORG_ID        - Levo organization ID
+
+    Artifact Registry auth (pick ONE of the following):
+        LEVOAI_GAR_SA_KEY_B64 - Base64-encoded Google service account JSON key.
+                                Recommended. Uses keyrings.google-artifactregistry-auth,
+                                which auto-refreshes OAuth tokens. No gcloud required.
+        PYPI_USERNAME + PYPI_PASSWORD
+                              - Legacy path. PYPI_USERNAME is typically
+                                'oauth2accesstoken' and PYPI_PASSWORD is a short-lived
+                                gcloud access token (ya29.*). Token expires in ~60 min.
+
     Optional Environment Variables:
         LEVOAI_CLI_VERSION  - Specific CLI version (default: latest)
         LEVOAI_BASE_URL     - Custom Levo API URL
@@ -311,21 +318,49 @@ function Install-LevoCli {
     #>
     
     Write-Log "Installing Levo CLI..."
-    
-    # Build index URL
+
+    # Build index URL. Auth mode priority:
+    #   1. LEVOAI_GAR_SA_KEY_B64 -> keyring helper (auto-refresh, no gcloud).
+    #   2. PYPI_USERNAME/PYPI_PASSWORD -> legacy URL-embedded credentials.
     $indexUrl = $Config.PypiIndexUrl
-    
-    if ($env:PYPI_USERNAME) {
+    $useKeyring = $false
+
+    if ($env:LEVOAI_GAR_SA_KEY_B64) {
+        $saKeyPath = Join-Path $Config.VenvPath 'gar-sa-key.json'
+        try {
+            $keyBytes = [Convert]::FromBase64String($env:LEVOAI_GAR_SA_KEY_B64.Trim())
+            [System.IO.File]::WriteAllBytes($saKeyPath, $keyBytes)
+        } catch {
+            Write-Log "Failed to decode LEVOAI_GAR_SA_KEY_B64: $_" -Level Error
+            return $false
+        }
+        $env:GOOGLE_APPLICATION_CREDENTIALS = $saKeyPath
+
+        Write-Log "Installing keyrings.google-artifactregistry-auth..."
+        $keyringOutput = & python -m pip install --no-cache-dir keyrings.google-artifactregistry-auth 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log "Failed to install keyring helper" -Level Error
+            Write-Host $keyringOutput -ForegroundColor Red
+            return $false
+        }
+        $useKeyring = $true
+        Write-Log "Using GAR service account key via keyring helper" -Level Success
+    } elseif ($env:PYPI_USERNAME) {
         if (-not $env:PYPI_PASSWORD) {
             Write-Log "PYPI_PASSWORD is required when PYPI_USERNAME is set" -Level Error
             return $false
         }
-        
+
         # Construct authenticated URL
         $indexUrl = "https://$($env:PYPI_USERNAME):$($env:PYPI_PASSWORD)@us-python.pkg.dev/levoai/pypi-levo/simple/"
-        Write-Log "Using authenticated repository"
+        Write-Log "Using authenticated repository (URL-embedded credentials)"
     } else {
-        Write-Log "Using repository: $indexUrl"
+        Write-Log "No Artifact Registry credentials configured." -Level Error
+        Write-Log "Set ONE of the following before running install/test:" -Level Error
+        Write-Log '  $env:LEVOAI_GAR_SA_KEY_B64 = "<base64 SA key>"   (recommended)' -Level Error
+        Write-Log '  -- or --' -Level Error
+        Write-Log '  $env:PYPI_USERNAME = "oauth2accesstoken"; $env:PYPI_PASSWORD = "<ya29 token>"' -Level Error
+        return $false
     }
     
     # Build package spec
@@ -760,9 +795,11 @@ function Invoke-Help {
     Write-Host ""
     Write-Host "Required Environment Variables:"
     Write-Host '  $env:LEVOAI_AUTH_KEY      Levo Auth Key'
-    Write-Host '  $env:LEVOAI_ORG_ID       Levo organization ID'
-    Write-Host '  $env:PYPI_USERNAME     PyPI username (oauth2accesstoken for GAR)'
-    Write-Host '  $env:PYPI_PASSWORD     PyPI password (gcloud access token)'
+    Write-Host '  $env:LEVOAI_ORG_ID        Levo organization ID'
+    Write-Host ""
+    Write-Host "Artifact Registry auth (pick ONE):"
+    Write-Host '  $env:LEVOAI_GAR_SA_KEY_B64   Base64 Google SA JSON key (recommended)'
+    Write-Host '  $env:PYPI_USERNAME + $env:PYPI_PASSWORD   Legacy ya29.* token path'
     Write-Host ""
     Write-Host "Optional Environment Variables:"
     Write-Host '  $env:LEVOAI_BASE_URL      Custom Levo API URL'
