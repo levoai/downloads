@@ -34,7 +34,7 @@
     Where to run tests: 'cloud' or 'on-prem' (default: cloud)
 
 .PARAMETER TargetUrl
-    Target URL for the test run (required)
+    Target URL for the test run (required unless UseTargetUrlFromTraces is set)
 
 .PARAMETER TestUsers
     Comma-separated test user names (optional, only for TestUserData data source)
@@ -53,6 +53,15 @@
 
 .PARAMETER FailThreshold
     Fail if vulnerability count exceeds this threshold (optional)
+
+.PARAMETER Header
+    Custom target request header. Can be specified multiple times.
+
+.PARAMETER UseTargetUrlFromTraces
+    Use target URLs from traces instead of TargetUrl
+
+.PARAMETER UseAuthFromTraces
+    Use authentication captured in traces
 
 .EXAMPLE
     .\levo-cli-runner.ps1 install
@@ -103,6 +112,29 @@ param(
     [string]$ExcludeEndpointPattern = '',
     [string]$Categories = '',
     [int]$FailThreshold = 0,
+    [string[]]$Header = @(),
+    [switch]$RetainTestPlan,
+    [string]$ProxyHost = '',
+    [int]$ProxyPort = 0,
+    [int]$MaxRunTimeMinutes = 0,
+    [int]$SuiteExecutionDelay = 0,
+    [int]$CaseExecutionDelay = 0,
+    [switch]$IgnoreSslVerify,
+    [switch]$IgnoreHealthCheck,
+    [int]$RequestTimeout = 0,
+    [switch]$GenerateJunitReport,
+    [string]$TraceId = '',
+    [string]$EndpointTags = '',
+    [string]$TestPlanName = '',
+    [string]$FilterJson = '',
+    [int]$SkipCategoriesRunWithinMinutes = 0,
+    [switch]$UseTargetUrlFromTraces,
+    [switch]$RunTestsSequentially,
+    [switch]$AddTrailingSlash,
+    [string]$TestrunnerGroupName = '',
+    [switch]$UseAuthFromTraces,
+    [int]$TraceReceivedTimeInMinutes = 0,
+    [string]$ScanId = '',
     [string]$VenvDir = '.levo-venv',
     [string]$WorkDir = $PWD
 )
@@ -512,8 +544,8 @@ function Test-Requirements {
         $failed = $true
     }
     
-    if (-not $script:TargetUrl) {
-        Write-Log "TargetUrl parameter is required but not set" -Level Error
+    if (-not $script:TargetUrl -and -not $script:UseTargetUrlFromTraces) {
+        Write-Log "TargetUrl parameter is required unless UseTargetUrlFromTraces is set" -Level Error
         $failed = $true
     }
     
@@ -532,6 +564,32 @@ function Test-Requirements {
         Write-Log "TestMethods and ExcludeMethods cannot be used together" -Level Error
         $failed = $true
     }
+
+    if ($script:ProxyPort -lt 0 -or $script:ProxyPort -gt 65535) {
+        Write-Log "ProxyPort must be between 1 and 65535 when set" -Level Error
+        $failed = $true
+    }
+
+    if ($script:MaxRunTimeMinutes -lt 0 -or $script:SuiteExecutionDelay -lt 0 -or
+        $script:CaseExecutionDelay -lt 0 -or $script:RequestTimeout -lt 0 -or
+        $script:SkipCategoriesRunWithinMinutes -lt 0 -or
+        $script:TraceReceivedTimeInMinutes -lt 0) {
+        Write-Log "Numeric remote test run options cannot be negative" -Level Error
+        $failed = $true
+    }
+
+    if ($script:FilterJson) {
+        try {
+            $parsedFilter = $script:FilterJson | ConvertFrom-Json -ErrorAction Stop
+            if ($null -eq $parsedFilter -or $parsedFilter.GetType().Name -ne 'PSCustomObject') {
+                Write-Log "FilterJson must be a JSON object" -Level Error
+                $failed = $true
+            }
+        } catch {
+            Write-Log "FilterJson must be valid JSON: $_" -Level Error
+            $failed = $true
+        }
+    }
     
     if ($failed) {
         Write-Host ""
@@ -539,6 +597,7 @@ function Test-Requirements {
         Write-Host '  $env:LEVOAI_AUTH_KEY = "your-auth-key"'
         Write-Host '  $env:LEVOAI_ORG_ID = "your-org-id"'
         Write-Host '  -TargetUrl "https://api.example.com"'
+        Write-Host '  or -UseTargetUrlFromTraces'
         Write-Host ""
     }
     
@@ -565,6 +624,29 @@ function Set-TestDefaults {
     $script:ExcludeEndpointPattern = $ExcludeEndpointPattern
     $script:Categories = $Categories
     $script:FailThreshold = $FailThreshold
+    $script:Header = $Header
+    $script:RetainTestPlan = [bool]$RetainTestPlan
+    $script:ProxyHost = $ProxyHost
+    $script:ProxyPort = $ProxyPort
+    $script:MaxRunTimeMinutes = $MaxRunTimeMinutes
+    $script:SuiteExecutionDelay = $SuiteExecutionDelay
+    $script:CaseExecutionDelay = $CaseExecutionDelay
+    $script:IgnoreSslVerify = [bool]$IgnoreSslVerify
+    $script:IgnoreHealthCheck = [bool]$IgnoreHealthCheck
+    $script:RequestTimeout = $RequestTimeout
+    $script:GenerateJunitReport = [bool]$GenerateJunitReport
+    $script:TraceId = $TraceId
+    $script:EndpointTags = $EndpointTags
+    $script:TestPlanName = $TestPlanName
+    $script:FilterJson = $FilterJson
+    $script:SkipCategoriesRunWithinMinutes = $SkipCategoriesRunWithinMinutes
+    $script:UseTargetUrlFromTraces = [bool]$UseTargetUrlFromTraces
+    $script:RunTestsSequentially = [bool]$RunTestsSequentially
+    $script:AddTrailingSlash = [bool]$AddTrailingSlash
+    $script:TestrunnerGroupName = $TestrunnerGroupName
+    $script:UseAuthFromTraces = [bool]$UseAuthFromTraces
+    $script:TraceReceivedTimeInMinutes = $TraceReceivedTimeInMinutes
+    $script:ScanId = $ScanId
     
     # App name: use parameter if provided, otherwise auto-detect
     if ($AppName) {
@@ -601,7 +683,11 @@ function Show-TestConfig {
     Write-Host "  Environment:      $script:Environment"
     Write-Host "  Data Source:      $script:DataSource"
     Write-Host "  Run On:           $script:RunOn"
-    Write-Host "  Target URL:       $script:TargetUrl"
+    if ($script:UseTargetUrlFromTraces) {
+        Write-Host "  Target URL:       from traces"
+    } else {
+        Write-Host "  Target URL:       $script:TargetUrl"
+    }
     if ($script:TestUsers) {
         Write-Host "  Test Users:       $script:TestUsers"
     }
@@ -625,6 +711,23 @@ function Show-TestConfig {
     if ($script:FailThreshold -gt 0) {
         Write-Host "  Fail Threshold:   $script:FailThreshold"
     }
+    if ($script:EndpointTags) {
+        Write-Host "  Endpoint Tags:    $script:EndpointTags"
+    }
+    if ($script:TestPlanName) {
+        Write-Host "  Test Plan Name:   $script:TestPlanName"
+    }
+    if ($script:TestrunnerGroupName) {
+        Write-Host "  Testrunner Group: $script:TestrunnerGroupName"
+    }
+    if ($script:Header -and $script:Header.Count -gt 0) {
+        Write-Host "  Headers:          $($script:Header.Count) custom header(s)"
+    }
+    if ($script:RetainTestPlan) { Write-Host "  Retain Test Plan: true" }
+    if ($script:IgnoreSslVerify) { Write-Host "  Ignore SSL:       true" }
+    if ($script:IgnoreHealthCheck) { Write-Host "  Ignore Health:    true" }
+    if ($script:UseAuthFromTraces) { Write-Host "  Auth From Traces: true" }
+    if ($script:RunTestsSequentially) { Write-Host "  Sequential Runs:  true" }
     $apiUrl = if ($env:LEVO_BASE_URL) { $env:LEVO_BASE_URL } else { $DEFAULT_LEVOAI_BASE_URL }
     Write-Host "  API URL:          $apiUrl"
     Write-Host ""
@@ -660,13 +763,18 @@ function Invoke-SecurityTest {
         $script:DataSource  # "TestUserData" (no spaces)
         '--run-on'
         $script:RunOn
-        '--target-url'
-        $script:TargetUrl
         '--fail-scope'
         $script:FailScope
         '--fail-severity'
         $script:FailSeverity
     )
+
+    if ($script:UseTargetUrlFromTraces) {
+        $processArgs += '--use-target-url-from-traces'
+    } else {
+        $processArgs += '--target-url'
+        $processArgs += $script:TargetUrl
+    }
     
     # Add methods or exclude-methods (mutually exclusive)
     if ($script:TestMethods) {
@@ -705,9 +813,80 @@ function Invoke-SecurityTest {
     }
     
     # Add test-users only if provided and data source is TestUserData
-    if ($script:TestUsers -and $script:DataSource -eq 'TestUserData') {
+    if ($script:TestUsers -and $script:DataSource -in @('TestUserData', 'Test User Data')) {
         $processArgs += '--test-users'
         $processArgs += $script:TestUsers
+    }
+
+    foreach ($headerValue in $script:Header) {
+        if ($headerValue) {
+            $processArgs += '--header'
+            $processArgs += $headerValue
+        }
+    }
+
+    if ($script:RetainTestPlan) { $processArgs += '--retain-test-plan' }
+    if ($script:ProxyHost) {
+        $processArgs += '--proxy-host'
+        $processArgs += $script:ProxyHost
+    }
+    if ($script:ProxyPort -gt 0) {
+        $processArgs += '--proxy-port'
+        $processArgs += $script:ProxyPort
+    }
+    if ($script:MaxRunTimeMinutes -gt 0) {
+        $processArgs += '--max-run-time-minutes'
+        $processArgs += $script:MaxRunTimeMinutes
+    }
+    if ($script:SuiteExecutionDelay -gt 0) {
+        $processArgs += '--suite-execution-delay'
+        $processArgs += $script:SuiteExecutionDelay
+    }
+    if ($script:CaseExecutionDelay -gt 0) {
+        $processArgs += '--case-execution-delay'
+        $processArgs += $script:CaseExecutionDelay
+    }
+    if ($script:IgnoreSslVerify) { $processArgs += '--ignore-ssl-verify' }
+    if ($script:IgnoreHealthCheck) { $processArgs += '--ignore-health-check' }
+    if ($script:RequestTimeout -gt 0) {
+        $processArgs += '--request-timeout'
+        $processArgs += $script:RequestTimeout
+    }
+    if ($script:GenerateJunitReport) { $processArgs += '--generate-junit-report' }
+    if ($script:TraceId) {
+        $processArgs += '--trace-id'
+        $processArgs += $script:TraceId
+    }
+    if ($script:EndpointTags) {
+        $processArgs += '--endpoint-tags'
+        $processArgs += $script:EndpointTags
+    }
+    if ($script:TestPlanName) {
+        $processArgs += '--test-plan-name'
+        $processArgs += $script:TestPlanName
+    }
+    if ($script:FilterJson) {
+        $processArgs += '--filter-json'
+        $processArgs += $script:FilterJson
+    }
+    if ($script:SkipCategoriesRunWithinMinutes -gt 0) {
+        $processArgs += '--skip-categories-run-within-minutes'
+        $processArgs += $script:SkipCategoriesRunWithinMinutes
+    }
+    if ($script:RunTestsSequentially) { $processArgs += '--run-tests-sequentially' }
+    if ($script:AddTrailingSlash) { $processArgs += '--add-trailing-slash' }
+    if ($script:TestrunnerGroupName) {
+        $processArgs += '--testrunner-group-name'
+        $processArgs += $script:TestrunnerGroupName
+    }
+    if ($script:UseAuthFromTraces) { $processArgs += '--use-auth-from-traces' }
+    if ($script:TraceReceivedTimeInMinutes -gt 0) {
+        $processArgs += '--trace-received-time-in-minutes'
+        $processArgs += $script:TraceReceivedTimeInMinutes
+    }
+    if ($script:ScanId) {
+        $processArgs += '--scan-id'
+        $processArgs += $script:ScanId
     }
     
     # Add verbosity at the end
@@ -798,6 +977,28 @@ function Invoke-Help {
     Write-Host "  -EndpointPattern <string> Regex pattern to match endpoints to be tested (optional)"
     Write-Host "  -ExcludeEndpointPattern <string> Regex pattern to exclude endpoints from testing (optional)"
     Write-Host "  -Categories <string>    Security test categories, comma-separated (optional)"
+    Write-Host "  -EndpointTags <string>  Endpoint tags, comma-separated (optional)"
+    Write-Host "  -Header <string[]>      Custom request header(s), repeatable. Example: -Header 'Authorization: Bearer token'"
+    Write-Host "  -UseTargetUrlFromTraces Use target URLs from traces instead of TargetUrl"
+    Write-Host "  -UseAuthFromTraces      Use authentication captured in traces"
+    Write-Host "  -TraceId <string>       Trace ID to use when running from trace data"
+    Write-Host "  -TraceReceivedTimeInMinutes <int> How far back to look for traces"
+    Write-Host "  -TestPlanName <string>  Name for the generated test plan"
+    Write-Host "  -FilterJson <string>    Raw FilterMetadata JSON for backend filtering"
+    Write-Host "  -TestrunnerGroupName <string> On-prem testrunner group name"
+    Write-Host "  -ProxyHost/-ProxyPort   Proxy settings for target API requests"
+    Write-Host "  -IgnoreSslVerify        Disable target SSL verification"
+    Write-Host "  -IgnoreHealthCheck      Skip target URL reachability checks"
+    Write-Host "  -RequestTimeout <int>   Target request timeout in seconds"
+    Write-Host "  -RunTestsSequentially   Run endpoint test batches sequentially"
+    Write-Host "  -AddTrailingSlash       Append trailing slash to endpoint paths"
+    Write-Host "  -RetainTestPlan         Keep the generated test plan after the run"
+    Write-Host "  -GenerateJunitReport    Request JUnit report generation"
+    Write-Host "  -MaxRunTimeMinutes <int> Maximum total run time"
+    Write-Host "  -SuiteExecutionDelay <int> Delay between endpoint/test-suite execution"
+    Write-Host "  -CaseExecutionDelay <int> Delay between test case execution"
+    Write-Host "  -SkipCategoriesRunWithinMinutes <int> Skip recently run categories"
+    Write-Host "  -ScanId <string>        Optional web app scan UUID correlation ID"
     Write-Host "  -FailScope <string>      new|any|none (default: new)"
     Write-Host "  -FailSeverity <string>   critical|high|medium|low|none (default: high)"
     Write-Host "  -FailThreshold <int>     Fail if vulnerability count exceeds this threshold (optional)"
@@ -809,6 +1010,9 @@ function Invoke-Help {
     Write-Host "  .\levo-cli-runner.ps1 test -DataSource 'TestUserData' -TestUsers 'Victim1,Victim2' -TargetUrl https://api.example.com"
     Write-Host "  .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com -ExcludeMethods 'DELETE,PUT' -Categories 'CORS,FUZZING'"
     Write-Host "  .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com -EndpointPattern '^/api/v1/.*' -FailThreshold 10"
+    Write-Host "  .\levo-cli-runner.ps1 test -Environment UAT -UseTargetUrlFromTraces -DataSource Traces -UseAuthFromTraces"
+    Write-Host "  .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com -Header 'Authorization: Bearer token' -IgnoreSslVerify"
+    Write-Host "  .\levo-cli-runner.ps1 test -TargetUrl https://api.example.com -RunOn on-prem -TestrunnerGroupName uat-runners"
     Write-Host ""
     Write-Host "Required Environment Variables:"
     Write-Host '  $env:LEVOAI_AUTH_KEY      Levo Auth Key'
@@ -891,6 +1095,9 @@ function Invoke-Version {
 function Invoke-Test {
     Write-Banner "Levo Security Test"
     
+    Set-TestDefaults
+    Set-LevoEnvironmentVariables
+
     if (-not (Test-Requirements)) { return 1 }
     
     # Ensure installed
@@ -908,7 +1115,6 @@ function Invoke-Test {
         Write-Log "Levo CLI already installed"
     }
     
-    Set-TestDefaults
     Show-TestConfig
     
     $exitCode = Invoke-SecurityTest
@@ -928,6 +1134,9 @@ function Invoke-Test {
 function Invoke-Audit {
     Write-Banner "Levo Security Audit"
     
+    Set-TestDefaults
+    Set-LevoEnvironmentVariables
+
     if (-not (Test-Requirements)) { return 1 }
     
     # Ensure installed
@@ -943,7 +1152,6 @@ function Invoke-Audit {
     }
     
     # Set audit defaults
-    Set-TestDefaults
     $script:FailScope = 'none'
     $script:FailSeverity = 'none'
     $script:TestMethods = 'GET,POST,PUT,DELETE,PATCH'
