@@ -113,7 +113,6 @@ param(
     [string]$Categories = '',
     [int]$FailThreshold = 0,
     [string[]]$Header = @(),
-    [switch]$RetainTestPlan,
     [string]$ProxyHost = '',
     [int]$ProxyPort = 0,
     [int]$MaxRunTimeMinutes = 0,
@@ -123,10 +122,7 @@ param(
     [switch]$IgnoreHealthCheck,
     [int]$RequestTimeout = 0,
     [switch]$GenerateJunitReport,
-    [string]$TraceId = '',
     [string]$EndpointTags = '',
-    [string]$TestPlanName = '',
-    [string]$FilterJson = '',
     [int]$SkipCategoriesRunWithinMinutes = 0,
     [switch]$UseTargetUrlFromTraces,
     [switch]$RunTestsSequentially,
@@ -134,7 +130,6 @@ param(
     [string]$TestrunnerGroupName = '',
     [switch]$UseAuthFromTraces,
     [int]$TraceReceivedTimeInMinutes = 0,
-    [string]$ScanId = '',
     [string]$VenvDir = '.levo-venv',
     [string]$WorkDir = $PWD
 )
@@ -578,19 +573,6 @@ function Test-Requirements {
         $failed = $true
     }
 
-    if ($script:FilterJson) {
-        try {
-            $parsedFilter = $script:FilterJson | ConvertFrom-Json -ErrorAction Stop
-            if ($null -eq $parsedFilter -or $parsedFilter.GetType().Name -ne 'PSCustomObject') {
-                Write-Log "FilterJson must be a JSON object" -Level Error
-                $failed = $true
-            }
-        } catch {
-            Write-Log "FilterJson must be valid JSON: $_" -Level Error
-            $failed = $true
-        }
-    }
-    
     if ($failed) {
         Write-Host ""
         Write-Host "Please set the required environment variables and parameters:"
@@ -625,7 +607,6 @@ function Set-TestDefaults {
     $script:Categories = $Categories
     $script:FailThreshold = $FailThreshold
     $script:Header = $Header
-    $script:RetainTestPlan = [bool]$RetainTestPlan
     $script:ProxyHost = $ProxyHost
     $script:ProxyPort = $ProxyPort
     $script:MaxRunTimeMinutes = $MaxRunTimeMinutes
@@ -635,10 +616,7 @@ function Set-TestDefaults {
     $script:IgnoreHealthCheck = [bool]$IgnoreHealthCheck
     $script:RequestTimeout = $RequestTimeout
     $script:GenerateJunitReport = [bool]$GenerateJunitReport
-    $script:TraceId = $TraceId
     $script:EndpointTags = $EndpointTags
-    $script:TestPlanName = $TestPlanName
-    $script:FilterJson = $FilterJson
     $script:SkipCategoriesRunWithinMinutes = $SkipCategoriesRunWithinMinutes
     $script:UseTargetUrlFromTraces = [bool]$UseTargetUrlFromTraces
     $script:RunTestsSequentially = [bool]$RunTestsSequentially
@@ -646,7 +624,6 @@ function Set-TestDefaults {
     $script:TestrunnerGroupName = $TestrunnerGroupName
     $script:UseAuthFromTraces = [bool]$UseAuthFromTraces
     $script:TraceReceivedTimeInMinutes = $TraceReceivedTimeInMinutes
-    $script:ScanId = $ScanId
     
     # App name: use parameter if provided, otherwise auto-detect
     if ($AppName) {
@@ -714,16 +691,12 @@ function Show-TestConfig {
     if ($script:EndpointTags) {
         Write-Host "  Endpoint Tags:    $script:EndpointTags"
     }
-    if ($script:TestPlanName) {
-        Write-Host "  Test Plan Name:   $script:TestPlanName"
-    }
     if ($script:TestrunnerGroupName) {
         Write-Host "  Testrunner Group: $script:TestrunnerGroupName"
     }
     if ($script:Header -and $script:Header.Count -gt 0) {
         Write-Host "  Headers:          $($script:Header.Count) custom header(s)"
     }
-    if ($script:RetainTestPlan) { Write-Host "  Retain Test Plan: true" }
     if ($script:IgnoreSslVerify) { Write-Host "  Ignore SSL:       true" }
     if ($script:IgnoreHealthCheck) { Write-Host "  Ignore Health:    true" }
     if ($script:UseAuthFromTraces) { Write-Host "  Auth From Traces: true" }
@@ -825,7 +798,6 @@ function Invoke-SecurityTest {
         }
     }
 
-    if ($script:RetainTestPlan) { $processArgs += '--retain-test-plan' }
     if ($script:ProxyHost) {
         $processArgs += '--proxy-host'
         $processArgs += $script:ProxyHost
@@ -853,21 +825,9 @@ function Invoke-SecurityTest {
         $processArgs += $script:RequestTimeout
     }
     if ($script:GenerateJunitReport) { $processArgs += '--generate-junit-report' }
-    if ($script:TraceId) {
-        $processArgs += '--trace-id'
-        $processArgs += $script:TraceId
-    }
     if ($script:EndpointTags) {
         $processArgs += '--endpoint-tags'
         $processArgs += $script:EndpointTags
-    }
-    if ($script:TestPlanName) {
-        $processArgs += '--test-plan-name'
-        $processArgs += $script:TestPlanName
-    }
-    if ($script:FilterJson) {
-        $processArgs += '--filter-json'
-        $processArgs += $script:FilterJson
     }
     if ($script:SkipCategoriesRunWithinMinutes -gt 0) {
         $processArgs += '--skip-categories-run-within-minutes'
@@ -884,11 +844,7 @@ function Invoke-SecurityTest {
         $processArgs += '--trace-received-time-in-minutes'
         $processArgs += $script:TraceReceivedTimeInMinutes
     }
-    if ($script:ScanId) {
-        $processArgs += '--scan-id'
-        $processArgs += $script:ScanId
-    }
-    
+
     # Add verbosity at the end
     $processArgs += '--verbosity'
     $processArgs += 'INFO'
@@ -981,10 +937,7 @@ function Invoke-Help {
     Write-Host "  -Header <string[]>      Custom request header(s), repeatable. Example: -Header 'Authorization: Bearer token'"
     Write-Host "  -UseTargetUrlFromTraces Use target URLs from traces instead of TargetUrl"
     Write-Host "  -UseAuthFromTraces      Use authentication captured in traces"
-    Write-Host "  -TraceId <string>       Trace ID to use when running from trace data"
     Write-Host "  -TraceReceivedTimeInMinutes <int> How far back to look for traces"
-    Write-Host "  -TestPlanName <string>  Name for the generated test plan"
-    Write-Host "  -FilterJson <string>    Raw FilterMetadata JSON for backend filtering"
     Write-Host "  -TestrunnerGroupName <string> On-prem testrunner group name"
     Write-Host "  -ProxyHost/-ProxyPort   Proxy settings for target API requests"
     Write-Host "  -IgnoreSslVerify        Disable target SSL verification"
@@ -992,13 +945,11 @@ function Invoke-Help {
     Write-Host "  -RequestTimeout <int>   Target request timeout in seconds"
     Write-Host "  -RunTestsSequentially   Run endpoint test batches sequentially"
     Write-Host "  -AddTrailingSlash       Append trailing slash to endpoint paths"
-    Write-Host "  -RetainTestPlan         Keep the generated test plan after the run"
     Write-Host "  -GenerateJunitReport    Request JUnit report generation"
     Write-Host "  -MaxRunTimeMinutes <int> Maximum total run time"
     Write-Host "  -SuiteExecutionDelay <int> Delay between endpoint/test-suite execution"
     Write-Host "  -CaseExecutionDelay <int> Delay between test case execution"
     Write-Host "  -SkipCategoriesRunWithinMinutes <int> Skip recently run categories"
-    Write-Host "  -ScanId <string>        Optional web app scan UUID correlation ID"
     Write-Host "  -FailScope <string>      new|any|none (default: new)"
     Write-Host "  -FailSeverity <string>   critical|high|medium|low|none (default: high)"
     Write-Host "  -FailThreshold <int>     Fail if vulnerability count exceeds this threshold (optional)"
