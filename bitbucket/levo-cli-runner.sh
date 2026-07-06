@@ -90,16 +90,22 @@ PYTHON_CMD=""
 VENV_PATH=""
 LOG_FILE=""
 PIP_LOG_FILE=""
-SA_KEY_PATH=""
+SA_KEY_PATH=""          # temp GAR service-account key (keyring auth)
+PIP_CONFIG_PATH=""      # temp 0600 pip.conf holding legacy index creds
+CONFIG_CLEAN_PATH=""    # temp 0600 levo session config we created
 
 # ============================================================================
 # Cleanup / colors
 # ============================================================================
 # shellcheck disable=SC2329  # invoked indirectly via `trap cleanup EXIT`
 cleanup() {
-    if [ -n "$SA_KEY_PATH" ] && [ -f "$SA_KEY_PATH" ]; then
-        rm -f "$SA_KEY_PATH" 2>/dev/null || true
-    fi
+    # Remove any secret-bearing temp files we created.
+    local f
+    for f in "$SA_KEY_PATH" "$PIP_CONFIG_PATH" "$CONFIG_CLEAN_PATH"; do
+        if [ -n "$f" ] && [ -f "$f" ]; then
+            rm -f "$f" 2>/dev/null || true
+        fi
+    done
 }
 trap cleanup EXIT
 
@@ -134,11 +140,14 @@ banner() {
 }
 
 is_int() {
+    # Accepts an optional leading '-' followed by one or more digits.
+    # Rejects embedded hyphens (e.g. '1-2'), empty string, and non-digits.
     case "$1" in
-        ''|*[!0-9-]*) return 1 ;;
-        -*) case "${1#-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac ;;
-        *) return 0 ;;
+        ''|-) return 1 ;;
+        -*) case "${1#-}" in *[!0-9]*) return 1 ;; esac ;;
+        *[!0-9]*) return 1 ;;
     esac
+    return 0
 }
 
 # ============================================================================
@@ -244,9 +253,10 @@ install_levo_cli() {
 
     # Auth mode priority:
     #   1. LEVOAI_GAR_SA_KEY_B64 -> keyring helper (auto-refresh, no gcloud).
-    #   2. PYPI_USERNAME/PYPI_PASSWORD -> legacy URL-embedded credentials.
+    #   2. PYPI_USERNAME/PYPI_PASSWORD -> credentials in a 0600 pip.conf (no argv leak).
     local index_url="$PYPI_INDEX_URL_DEFAULT"
     local used_gar_key=false
+    local used_pip_config=false
 
     if [ -n "${LEVOAI_GAR_SA_KEY_B64:-}" ]; then
         used_gar_key=true
@@ -279,8 +289,26 @@ install_levo_cli() {
             log "PYPI_PASSWORD is required when PYPI_USERNAME is set" Error
             return 1
         fi
-        index_url="https://${PYPI_USERNAME}:${PYPI_PASSWORD}@us-python.pkg.dev/levoai/pypi-levo/simple/"
-        log "Using authenticated repository (URL-embedded credentials)"
+        # Do NOT embed the token in --index-url (it would leak via process argv on a
+        # shared Unix runner). Write it to a 0600 pip.conf and reference it via
+        # PIP_CONFIG_FILE so no secret ever appears on the command line.
+        used_pip_config=true
+        local old_umask_pc
+        old_umask_pc="$(umask)"
+        umask 077
+        PIP_CONFIG_PATH="$(mktemp "${TMPDIR:-/tmp}/levo-pip-XXXXXX.conf")" || {
+            umask "$old_umask_pc"
+            log "Failed to create temp pip config" Error
+            return 1
+        }
+        {
+            printf '[global]\n'
+            printf 'index-url = https://%s:%s@us-python.pkg.dev/levoai/pypi-levo/simple/\n' \
+                "${PYPI_USERNAME}" "${PYPI_PASSWORD}"
+            printf 'extra-index-url = https://pypi.org/simple/\n'
+        } > "$PIP_CONFIG_PATH"
+        umask "$old_umask_pc"
+        log "Using authenticated repository (credentials in 0600 pip.conf, not argv)"
     else
         log "No Artifact Registry credentials configured." Error
         log "Set ONE of the following before running install/test:" Error
@@ -300,14 +328,25 @@ install_levo_cli() {
     fi
 
     log "Running pip install..."
-    # Build pip args. For the keyring path, GOOGLE_APPLICATION_CREDENTIALS is scoped
-    # to just this command (no global env mutation to restore).
+    # trusted-host flags are not secret and stay on argv. Index URLs carrying secrets
+    # never touch argv:
+    #   - keyring path: GOOGLE_APPLICATION_CREDENTIALS scoped to this command; index-url
+    #     is the credential-free GAR URL.
+    #   - legacy path: index/extra-index come from the 0600 pip.conf via PIP_CONFIG_FILE.
     local rc
     if [ "$used_gar_key" = true ]; then
         GOOGLE_APPLICATION_CREDENTIALS="$SA_KEY_PATH" python -m pip install --no-cache-dir \
             "$package_spec" \
             --index-url "$index_url" \
             --extra-index-url "https://pypi.org/simple/" \
+            --trusted-host us-python.pkg.dev \
+            --trusted-host pypi.org \
+            --trusted-host files.pythonhosted.org \
+            >"$PIP_LOG_FILE" 2>&1
+        rc=$?
+    elif [ "$used_pip_config" = true ]; then
+        PIP_CONFIG_FILE="$PIP_CONFIG_PATH" python -m pip install --no-cache-dir \
+            "$package_spec" \
             --trusted-host us-python.pkg.dev \
             --trusted-host pypi.org \
             --trusted-host files.pythonhosted.org \
@@ -367,6 +406,29 @@ set_levo_env() {
     export LEVO_BASE_URL="${LEVOAI_BASE_URL:-$DEFAULT_LEVOAI_BASE_URL}"
 }
 
+# Authenticate once via `levo login`, which stores a session in LEVOAI_CONFIG_FILE.
+# The subsequent `remote-test-run` reads that session and is invoked WITHOUT --key,
+# so the long-lived auth key never appears in the long-running scan's process argv
+# (readable via ps/proc on shared Unix runners). The session file is created 0600.
+levo_login() {
+    set_levo_bin
+    log "Authenticating with Levo (session -> $LEVOAI_CONFIG_FILE)..."
+    local old_umask rc=0
+    old_umask="$(umask)"
+    umask 077
+    "${LEVO_BIN[@]}" login --key "${LEVOAI_AUTH_KEY:-}" --organization "${LEVOAI_ORG_ID:-}" \
+        >"$WORK_DIR/levo-login.log" 2>&1 || rc=$?
+    umask "$old_umask"
+    [ -f "$LEVOAI_CONFIG_FILE" ] && chmod 600 "$LEVOAI_CONFIG_FILE" 2>/dev/null || true
+    if [ "$rc" -ne 0 ]; then
+        log "levo login failed (exit $rc). See $WORK_DIR/levo-login.log" Error
+        log "Verify LEVOAI_AUTH_KEY / LEVOAI_ORG_ID." Error
+        return 1
+    fi
+    log "Authenticated; auth key kept out of the test-run command line" Success
+    return 0
+}
+
 # ============================================================================
 # Security testing
 # ============================================================================
@@ -387,7 +449,7 @@ test_requirements() {
     fi
     case "$DATA_SOURCE" in
         TestUserData|"Test User Data"|Traces) ;;
-        *) log "--data-source must be 'TestUserData' or 'Traces'" Error; failed=true ;;
+        *) log "--data-source must be 'TestUserData' (or 'Test User Data') or 'Traces'" Error; failed=true ;;
     esac
     case "$RUN_ON" in
         cloud|on-prem) ;;
@@ -478,11 +540,12 @@ invoke_security_test() {
     set_levo_env
     set_levo_bin
 
+    # NOTE: --key/--organization are deliberately NOT passed here. Auth comes from the
+    # session established by levo_login() (stored in LEVOAI_CONFIG_FILE), so the secret
+    # never appears in this long-running process's argv.
     local args
     args=(
         remote-test-run
-        --key "${LEVOAI_AUTH_KEY:-}"
-        --organization "${LEVOAI_ORG_ID:-}"
         --app-name "$APP_NAME"
         --env "$ENVIRONMENT"
         --data-source "$DATA_SOURCE"
@@ -689,6 +752,7 @@ invoke_test() {
         verify_installation || return 1
     fi
 
+    levo_login || return 1
     show_test_config
 
     local exit_code=0
@@ -721,6 +785,8 @@ invoke_audit() {
         log "Levo CLI not found, installing..."
         install_levo_cli || return 1
     fi
+
+    levo_login || return 1
 
     # Audit defaults
     FAIL_SCOPE="none"
@@ -804,7 +870,7 @@ parse_args() {
     for name in FAIL_THRESHOLD PROXY_PORT MAX_RUN_TIME_MINUTES SUITE_EXECUTION_DELAY \
                 CASE_EXECUTION_DELAY REQUEST_TIMEOUT SKIP_CATEGORIES_RUN_WITHIN_MINUTES \
                 TRACE_RECEIVED_TIME_IN_MINUTES; do
-        eval "val=\$$name"
+        val="${!name}"   # indirect expansion (bash 3.2+), avoids eval
         if ! is_int "$val"; then
             log "$name must be an integer (got: '$val')" Error
             exit 2
@@ -818,9 +884,27 @@ parse_args() {
 main() {
     parse_args "$@"
 
+    # Ensure the working directory exists (it is advertised via --work-dir and is where
+    # the venv, logs, and session config are written). Fail early with a clear message.
+    if [ ! -d "$WORK_DIR" ]; then
+        if ! mkdir -p "$WORK_DIR" 2>/dev/null; then
+            log "--work-dir '$WORK_DIR' does not exist and could not be created" Error
+            exit 2
+        fi
+    fi
+
     VENV_PATH="$WORK_DIR/$VENV_DIR"
     LOG_FILE="$WORK_DIR/levo-test-output.log"
     PIP_LOG_FILE="$WORK_DIR/pip-install.log"
+
+    # Session config: honor a user-provided LEVOAI_CONFIG_FILE, otherwise use a dedicated
+    # 0600 file in the work dir that we clean up on exit (holds the auth session).
+    if [ -z "${LEVOAI_CONFIG_FILE:-}" ]; then
+        export LEVOAI_CONFIG_FILE="$WORK_DIR/.levo-session.json"
+        CONFIG_CLEAN_PATH="$LEVOAI_CONFIG_FILE"
+    else
+        export LEVOAI_CONFIG_FILE
+    fi
 
     local exit_code=0
     case "$COMMAND" in
@@ -834,4 +918,8 @@ main() {
     exit "$exit_code"
 }
 
-main "$@"
+# Run main only when executed directly, so the script can be `source`d by the test
+# harness to unit-test individual functions without invoking the CLI.
+if [ "${BASH_SOURCE[0]:-$0}" = "${0}" ]; then
+    main "$@"
+fi
