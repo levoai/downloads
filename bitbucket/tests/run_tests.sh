@@ -113,6 +113,9 @@ assert_eq "no-auth test exits 1" "$rc" "1"
 assert_contains "no-auth test reports missing key" "$out" "LEVOAI_AUTH_KEY is required"
 run_runner test --bogus >/dev/null 2>&1; assert_eq "unknown flag exits 2" "$?" "2"
 run_runner test --proxy-port abc >/dev/null 2>&1; assert_eq "non-integer exits 2" "$?" "2"
+out="$(run_runner test --target-url https://x --fail-threshold -3 2>&1)"; rc=$?
+assert_eq "negative --fail-threshold exits 1" "$rc" "1"
+assert_contains "negative --fail-threshold reported" "$out" "cannot be negative"
 
 echo "== integration: data-source validation message =="
 out="$(run_runner test --target-url https://x --data-source Bogus 2>&1)"; rc=$?

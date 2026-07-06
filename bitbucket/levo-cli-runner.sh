@@ -460,13 +460,14 @@ test_requirements() {
         failed=true
     fi
     if [ "$PROXY_PORT" -lt 0 ] || [ "$PROXY_PORT" -gt 65535 ]; then
-        log "--proxy-port must be between 1 and 65535 when set" Error
+        log "--proxy-port must be between 1 and 65535 (0 = unset)" Error
         failed=true
     fi
     if [ "$MAX_RUN_TIME_MINUTES" -lt 0 ] || [ "$SUITE_EXECUTION_DELAY" -lt 0 ] || \
        [ "$CASE_EXECUTION_DELAY" -lt 0 ] || [ "$REQUEST_TIMEOUT" -lt 0 ] || \
        [ "$SKIP_CATEGORIES_RUN_WITHIN_MINUTES" -lt 0 ] || \
-       [ "$TRACE_RECEIVED_TIME_IN_MINUTES" -lt 0 ]; then
+       [ "$TRACE_RECEIVED_TIME_IN_MINUTES" -lt 0 ] || \
+       [ "$FAIL_THRESHOLD" -lt 0 ]; then
         log "Numeric remote test run options cannot be negative" Error
         failed=true
     fi
@@ -644,7 +645,7 @@ Options:
   --test-methods <string>        HTTP methods to include, comma-separated (default: GET,POST; excl. with --exclude-methods)
   --exclude-methods <string>     HTTP methods to exclude, comma-separated (excl. with --test-methods)
   --endpoint-pattern <string>    Regex to match endpoints to test
-  --exclude-endpoint-pattern <s> Regex to exclude endpoints from testing
+  --exclude-endpoint-pattern <string> Regex to exclude endpoints from testing
   --categories <string>          Security test categories, comma-separated
   --endpoint-tags <string>       Endpoint tags, comma-separated
   --header <string>              Custom request header (repeatable). Example: --header 'Authorization: Bearer token'
