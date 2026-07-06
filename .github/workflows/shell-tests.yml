@@ -22,9 +22,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
       - name: Lint (shellcheck)
+        # --severity=warning keeps results stable across shellcheck versions
+        # (info-level style notes vary between releases); real issues still fail.
         run: |
-          shellcheck bitbucket/levo-cli-runner.sh
-          shellcheck bitbucket/tests/run_tests.sh
+          shellcheck --severity=warning bitbucket/levo-cli-runner.sh
+          shellcheck --severity=warning bitbucket/tests/run_tests.sh
 
       - name: Syntax check
         run: bash -n bitbucket/levo-cli-runner.sh

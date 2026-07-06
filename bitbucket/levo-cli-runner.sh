@@ -419,7 +419,9 @@ levo_login() {
     "${LEVO_BIN[@]}" login --key "${LEVOAI_AUTH_KEY:-}" --organization "${LEVOAI_ORG_ID:-}" \
         >"$WORK_DIR/levo-login.log" 2>&1 || rc=$?
     umask "$old_umask"
-    [ -f "$LEVOAI_CONFIG_FILE" ] && chmod 600 "$LEVOAI_CONFIG_FILE" 2>/dev/null || true
+    if [ -f "$LEVOAI_CONFIG_FILE" ]; then
+        chmod 600 "$LEVOAI_CONFIG_FILE" 2>/dev/null || true
+    fi
     if [ "$rc" -ne 0 ]; then
         log "levo login failed (exit $rc). See $WORK_DIR/levo-login.log" Error
         log "Verify LEVOAI_AUTH_KEY / LEVOAI_ORG_ID." Error
