@@ -13,6 +13,11 @@
 #
 # Commands: install | test | audit | version | help
 #
+# Secret handling: no secret (Levo auth key, GAR/PyPI credentials) is ever passed
+# as a command-line argument, because argv is world-readable on Unix hosts via
+# `ps` / /proc/<pid>/cmdline. Secrets travel through the environment or 0600 temp
+# files instead; see LEVO_LOGIN_SHIM and install_levo_cli below.
+#
 # Required environment variables:
 #   LEVOAI_AUTH_KEY   Levo Auth key for authentication
 #   LEVOAI_ORG_ID     Levo organization ID
@@ -406,17 +411,84 @@ set_levo_env() {
     export LEVO_BASE_URL="${LEVOAI_BASE_URL:-$DEFAULT_LEVOAI_BASE_URL}"
 }
 
+# Python shim used to run `levo login` without ever placing the auth key on a
+# command line.
+#
+# argv is world-readable on Linux/macOS (`ps`, /proc/<pid>/cmdline), so any
+# process on a shared or self-hosted runner can read a secret passed as `--key`.
+# The environment block is not: /proc/<pid>/environ is readable only by the
+# process owner (and root), which is the standard way to hand a secret to a
+# child process.
+#
+# So the key is exported for this one invocation, and this shim appends it to
+# the *interpreter-level* `sys.argv` before handing control to the levo console
+# entry point. Assigning to `sys.argv` in Python rewrites only the in-process
+# list; it does not touch the kernel's copy of the command line. The OS-visible
+# command line therefore stays `python -c <shim source> login --organization X`,
+# with the secret nowhere in it.
+#
+# The entry point is resolved from installed package metadata (version- and
+# module-name agnostic), falling back to running the venv's `levo` console
+# script and then the `levo` module under runpy — the same two targets
+# set_levo_bin() picks between, so behaviour matches invoking `levo` directly.
+LEVO_LOGIN_SHIM='
+import os, runpy, sys
+
+key = os.environ.pop("LEVOAI_RUNNER_LOGIN_KEY", "")
+script = os.environ.pop("LEVOAI_RUNNER_LEVO_SCRIPT", "")
+
+argv = list(sys.argv[1:])
+if key:
+    argv = argv + ["--key", key]
+sys.argv = ["levo"] + argv
+del key
+
+fn = None
+try:
+    from importlib.metadata import entry_points
+    try:
+        eps = list(entry_points(group="console_scripts"))
+    except TypeError:  # importlib.metadata < 3.10 selection API
+        eps = list(entry_points().get("console_scripts", []))
+    for ep in eps:
+        if ep.name == "levo":
+            fn = ep.load()
+            break
+except Exception:
+    fn = None
+
+if fn is not None:
+    sys.exit(fn())
+if script and os.path.isfile(script):
+    runpy.run_path(script, run_name="__main__")
+    sys.exit(0)
+try:  # mirrors the "python -m levo" fallback in set_levo_bin
+    runpy.run_module("levo", run_name="__main__", alter_sys=True)
+    sys.exit(0)
+except ImportError:
+    pass
+sys.stderr.write("levo entry point not found in this environment\n")
+sys.exit(1)
+'
+
 # Authenticate once via `levo login`, which stores a session in LEVOAI_CONFIG_FILE.
 # The subsequent `remote-test-run` reads that session and is invoked WITHOUT --key,
 # so the long-lived auth key never appears in the long-running scan's process argv
 # (readable via ps/proc on shared Unix runners). The session file is created 0600.
+#
+# The login itself also keeps the key off argv: it is passed through the
+# environment and injected into sys.argv inside the interpreter by
+# LEVO_LOGIN_SHIM (see above), so the key is not on any process command line at
+# any point.
 levo_login() {
-    set_levo_bin
     log "Authenticating with Levo (session -> $LEVOAI_CONFIG_FILE)..."
-    local old_umask rc=0
+    local old_umask rc=0 levo_script=""
+    [ -x "$VENV_PATH/bin/levo" ] && levo_script="$VENV_PATH/bin/levo"
     old_umask="$(umask)"
     umask 077
-    "${LEVO_BIN[@]}" login --key "${LEVOAI_AUTH_KEY:-}" --organization "${LEVOAI_ORG_ID:-}" \
+    LEVOAI_RUNNER_LOGIN_KEY="${LEVOAI_AUTH_KEY:-}" \
+    LEVOAI_RUNNER_LEVO_SCRIPT="$levo_script" \
+        python -c "$LEVO_LOGIN_SHIM" login --organization "${LEVOAI_ORG_ID:-}" \
         >"$WORK_DIR/levo-login.log" 2>&1 || rc=$?
     umask "$old_umask"
     if [ -f "$LEVOAI_CONFIG_FILE" ]; then
@@ -427,7 +499,7 @@ levo_login() {
         log "Verify LEVOAI_AUTH_KEY / LEVOAI_ORG_ID." Error
         return 1
     fi
-    log "Authenticated; auth key kept out of the test-run command line" Success
+    log "Authenticated; auth key never placed on any process command line" Success
     return 0
 }
 
