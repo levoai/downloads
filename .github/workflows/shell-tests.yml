@@ -1,0 +1,35 @@
+name: Shell runner tests
+
+# Lints and tests the Bitbucket shell runner. Runs on changes to the runner
+# script or its tests so the PR gets automated checks (previously there were none).
+on:
+  push:
+    paths:
+      - 'bitbucket/**.sh'
+      - '.github/workflows/shell-tests.yml'
+  pull_request:
+    paths:
+      - 'bitbucket/**.sh'
+      - '.github/workflows/shell-tests.yml'
+
+jobs:
+  shellcheck-and-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint (shellcheck)
+        # --severity=warning keeps results stable across shellcheck versions
+        # (info-level style notes vary between releases); real issues still fail.
+        run: |
+          shellcheck --severity=warning bitbucket/levo-cli-runner.sh
+          shellcheck --severity=warning bitbucket/tests/run_tests.sh
+
+      - name: Syntax check
+        run: bash -n bitbucket/levo-cli-runner.sh
+
+      - name: Run tests
+        run: bitbucket/tests/run_tests.sh
