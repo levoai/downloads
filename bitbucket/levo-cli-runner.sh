@@ -883,11 +883,28 @@ invoke_audit() {
 # Argument parsing
 # ============================================================================
 require_value() {
-    # require_value <flag> <count-remaining>
+    # require_value <flag> <count-remaining> <value> [numeric]
+    #
+    # Guards against an option silently consuming the next option as its value
+    # (e.g. `--target-url --use-target-url-from-traces` setting TARGET_URL to the
+    # literal flag and never enabling trace mode). No option in this runner takes
+    # a value that legitimately starts with '-', with one exception: the numeric
+    # options accept a negative number, which is let through here and rejected
+    # later by the range check with a clearer message.
     if [ "$2" -lt 2 ]; then
         log "Option $1 requires a value" Error
         exit 2
     fi
+    case "$3" in
+        -*)
+            if [ "${4:-}" = numeric ] && is_int "$3"; then
+                return 0
+            fi
+            log "Option $1 requires a value, but got '$3' which looks like another option" Error
+            exit 2
+            ;;
+    esac
+    return 0
 }
 
 parse_args() {
@@ -901,33 +918,33 @@ parse_args() {
 
     while [ $# -gt 0 ]; do
         case "$1" in
-            --app-name) require_value "$1" $#; APP_NAME="$2"; shift 2 ;;
-            --environment|--env) require_value "$1" $#; ENVIRONMENT="$2"; shift 2 ;;
-            --test-methods) require_value "$1" $#; TEST_METHODS="$2"; shift 2 ;;
-            --fail-scope) require_value "$1" $#; FAIL_SCOPE="$2"; shift 2 ;;
-            --fail-severity) require_value "$1" $#; FAIL_SEVERITY="$2"; shift 2 ;;
-            --data-source) require_value "$1" $#; DATA_SOURCE="$2"; shift 2 ;;
-            --run-on) require_value "$1" $#; RUN_ON="$2"; shift 2 ;;
-            --target-url) require_value "$1" $#; TARGET_URL="$2"; shift 2 ;;
-            --test-users) require_value "$1" $#; TEST_USERS="$2"; shift 2 ;;
-            --exclude-methods) require_value "$1" $#; EXCLUDE_METHODS="$2"; shift 2 ;;
-            --endpoint-pattern) require_value "$1" $#; ENDPOINT_PATTERN="$2"; shift 2 ;;
-            --exclude-endpoint-pattern) require_value "$1" $#; EXCLUDE_ENDPOINT_PATTERN="$2"; shift 2 ;;
-            --categories) require_value "$1" $#; CATEGORIES="$2"; shift 2 ;;
-            --fail-threshold) require_value "$1" $#; FAIL_THRESHOLD="$2"; shift 2 ;;
-            --header) require_value "$1" $#; HEADERS+=("$2"); shift 2 ;;
-            --proxy-host) require_value "$1" $#; PROXY_HOST="$2"; shift 2 ;;
-            --proxy-port) require_value "$1" $#; PROXY_PORT="$2"; shift 2 ;;
-            --max-run-time-minutes) require_value "$1" $#; MAX_RUN_TIME_MINUTES="$2"; shift 2 ;;
-            --suite-execution-delay) require_value "$1" $#; SUITE_EXECUTION_DELAY="$2"; shift 2 ;;
-            --case-execution-delay) require_value "$1" $#; CASE_EXECUTION_DELAY="$2"; shift 2 ;;
-            --request-timeout) require_value "$1" $#; REQUEST_TIMEOUT="$2"; shift 2 ;;
-            --endpoint-tags) require_value "$1" $#; ENDPOINT_TAGS="$2"; shift 2 ;;
-            --skip-categories-run-within-minutes) require_value "$1" $#; SKIP_CATEGORIES_RUN_WITHIN_MINUTES="$2"; shift 2 ;;
-            --testrunner-group-name) require_value "$1" $#; TESTRUNNER_GROUP_NAME="$2"; shift 2 ;;
-            --trace-received-time-in-minutes) require_value "$1" $#; TRACE_RECEIVED_TIME_IN_MINUTES="$2"; shift 2 ;;
-            --venv-dir) require_value "$1" $#; VENV_DIR="$2"; shift 2 ;;
-            --work-dir) require_value "$1" $#; WORK_DIR="$2"; shift 2 ;;
+            --app-name) require_value "$1" $# "${2:-}"; APP_NAME="$2"; shift 2 ;;
+            --environment|--env) require_value "$1" $# "${2:-}"; ENVIRONMENT="$2"; shift 2 ;;
+            --test-methods) require_value "$1" $# "${2:-}"; TEST_METHODS="$2"; shift 2 ;;
+            --fail-scope) require_value "$1" $# "${2:-}"; FAIL_SCOPE="$2"; shift 2 ;;
+            --fail-severity) require_value "$1" $# "${2:-}"; FAIL_SEVERITY="$2"; shift 2 ;;
+            --data-source) require_value "$1" $# "${2:-}"; DATA_SOURCE="$2"; shift 2 ;;
+            --run-on) require_value "$1" $# "${2:-}"; RUN_ON="$2"; shift 2 ;;
+            --target-url) require_value "$1" $# "${2:-}"; TARGET_URL="$2"; shift 2 ;;
+            --test-users) require_value "$1" $# "${2:-}"; TEST_USERS="$2"; shift 2 ;;
+            --exclude-methods) require_value "$1" $# "${2:-}"; EXCLUDE_METHODS="$2"; shift 2 ;;
+            --endpoint-pattern) require_value "$1" $# "${2:-}"; ENDPOINT_PATTERN="$2"; shift 2 ;;
+            --exclude-endpoint-pattern) require_value "$1" $# "${2:-}"; EXCLUDE_ENDPOINT_PATTERN="$2"; shift 2 ;;
+            --categories) require_value "$1" $# "${2:-}"; CATEGORIES="$2"; shift 2 ;;
+            --fail-threshold) require_value "$1" $# "${2:-}" numeric; FAIL_THRESHOLD="$2"; shift 2 ;;
+            --header) require_value "$1" $# "${2:-}"; HEADERS+=("$2"); shift 2 ;;
+            --proxy-host) require_value "$1" $# "${2:-}"; PROXY_HOST="$2"; shift 2 ;;
+            --proxy-port) require_value "$1" $# "${2:-}" numeric; PROXY_PORT="$2"; shift 2 ;;
+            --max-run-time-minutes) require_value "$1" $# "${2:-}" numeric; MAX_RUN_TIME_MINUTES="$2"; shift 2 ;;
+            --suite-execution-delay) require_value "$1" $# "${2:-}" numeric; SUITE_EXECUTION_DELAY="$2"; shift 2 ;;
+            --case-execution-delay) require_value "$1" $# "${2:-}" numeric; CASE_EXECUTION_DELAY="$2"; shift 2 ;;
+            --request-timeout) require_value "$1" $# "${2:-}" numeric; REQUEST_TIMEOUT="$2"; shift 2 ;;
+            --endpoint-tags) require_value "$1" $# "${2:-}"; ENDPOINT_TAGS="$2"; shift 2 ;;
+            --skip-categories-run-within-minutes) require_value "$1" $# "${2:-}" numeric; SKIP_CATEGORIES_RUN_WITHIN_MINUTES="$2"; shift 2 ;;
+            --testrunner-group-name) require_value "$1" $# "${2:-}"; TESTRUNNER_GROUP_NAME="$2"; shift 2 ;;
+            --trace-received-time-in-minutes) require_value "$1" $# "${2:-}" numeric; TRACE_RECEIVED_TIME_IN_MINUTES="$2"; shift 2 ;;
+            --venv-dir) require_value "$1" $# "${2:-}"; VENV_DIR="$2"; shift 2 ;;
+            --work-dir) require_value "$1" $# "${2:-}"; WORK_DIR="$2"; shift 2 ;;
             --ignore-ssl-verify) IGNORE_SSL_VERIFY=true; shift ;;
             --ignore-health-check) IGNORE_HEALTH_CHECK=true; shift ;;
             --generate-junit-report) GENERATE_JUNIT_REPORT=true; shift ;;

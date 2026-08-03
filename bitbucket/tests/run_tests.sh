@@ -101,6 +101,15 @@ run_runner() {
 
 scan_argv() { run_runner "$@" | grep '^ARG|' | sed 's/^ARG|//' | tr '\n' ' '; }
 
+# Same stubs/env as run_runner, but passes argv through verbatim — needed for
+# parser tests where a trailing --work-dir would change what is being tested.
+run_raw() {
+    PATH="$SANDBOX/fakebin:$PATH" \
+    LEVOAI_AUTH_KEY="$AUTH_KEY" \
+    LEVOAI_ORG_ID="ORG123" \
+        bash "$RUNNER" "$@" 2>&1
+}
+
 # Source the runner (BASH_SOURCE guard prevents main from running) and run one
 # expression in a subshell; returns that expression's exit code.
 sourced() {
@@ -138,6 +147,32 @@ run_runner test --proxy-port abc >/dev/null 2>&1; assert_eq "non-integer exits 2
 out="$(run_runner test --target-url https://x --fail-threshold -3 2>&1)"; rc=$?
 assert_eq "negative --fail-threshold exits 1" "$rc" "1"
 assert_contains "negative --fail-threshold reported" "$out" "cannot be negative"
+
+echo "== integration: options never swallow the following flag as their value =="
+# `--target-url --use-target-url-from-traces` must not set TARGET_URL to the
+# literal flag (and silently leave trace mode off).
+out="$(run_raw test --target-url --use-target-url-from-traces --work-dir "$SANDBOX/work")"; rc=$?
+assert_eq       "flag-as-value exits 2"     "$rc" "2"
+assert_contains "flag-as-value reported"    "$out" "looks like another option"
+assert_contains "flag-as-value names the option" "$out" "--target-url"
+# Same for path-valued options: --venv-dir must not consume --work-dir.
+out="$(run_raw test --target-url https://x --venv-dir --work-dir "$SANDBOX/work")"; rc=$?
+assert_eq       "path option consuming next flag exits 2"  "$rc" "2"
+assert_contains "path option consuming next flag reported" "$out" "looks like another option"
+# ...and for numeric options, where only a negative number is a legal '-' value.
+out="$(run_raw test --target-url https://x --proxy-port --ignore-ssl-verify --work-dir "$SANDBOX/work")"; rc=$?
+assert_eq       "numeric option consuming next flag exits 2"  "$rc" "2"
+assert_contains "numeric option consuming next flag reported" "$out" "looks like another option"
+out="$(run_raw test --target-url https://x --request-timeout -5 --work-dir "$SANDBOX/work")"; rc=$?
+assert_eq       "negative number still reaches range validation" "$rc" "1"
+assert_contains "negative number reported as negative"           "$out" "cannot be negative"
+# A missing value at the end of argv is still caught.
+out="$(run_raw test --target-url https://x --work-dir)"; rc=$?
+assert_eq       "missing trailing value exits 2"  "$rc" "2"
+assert_contains "missing trailing value reported" "$out" "requires a value"
+# Values that merely contain '-' are unaffected.
+argv="$(scan_argv test --target-url https://x --app-name my-app)"
+assert_contains "hyphenated value accepted" "$argv" "--app-name my-app"
 
 echo "== integration: data-source validation message =="
 out="$(run_runner test --target-url https://x --data-source Bogus 2>&1)"; rc=$?
