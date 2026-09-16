@@ -369,7 +369,11 @@ install_shadownet() {
 
     log "Installing $(basename "$wheel") and its dependencies (this can take a few minutes)..."
     # Plain pip: default (public) index, no private credentials needed or exposed.
-    if ! python -m pip install --no-cache-dir "$wheel" >>"$PIP_LOG_FILE" 2>&1; then
+    # Two passes: force-reinstall the wheel itself (a re-published dev build keeps
+    # its version number, so a plain install would say "already satisfied"), then
+    # a normal install to pull in any dependencies the new build added.
+    if ! python -m pip install --no-cache-dir --force-reinstall --no-deps "$wheel" >>"$PIP_LOG_FILE" 2>&1 \
+        || ! python -m pip install --no-cache-dir "$wheel" >>"$PIP_LOG_FILE" 2>&1; then
         log "pip install failed. See $PIP_LOG_FILE for details" Error
         cat "$PIP_LOG_FILE" >&2 || true
         return 1
@@ -549,7 +553,7 @@ invoke_help() {
 Usage: $SCRIPT_NAME <command> [options] [-- <extra shadownet args>]
 
 Commands:
-  install   Install ShadowNet + Chromium into a virtual environment
+  install   Install or upgrade ShadowNet + Chromium in a virtual environment
   scan      Run a DAST security scan (auto-installs if needed)
   crawl     Discovery-only crawl, no security testing (auto-installs if needed)
   login     Log in to the Levo platform interactively (saves a session)
@@ -593,6 +597,8 @@ EOF
 }
 
 invoke_install() {
+    # Always (re)installs: this is how a customer upgrades to a new release or
+    # refreshes a re-published dev build. `scan`/`crawl` only install when missing.
     banner "Installing ShadowNet"
     find_python || return 1
     init_venv || return 1
