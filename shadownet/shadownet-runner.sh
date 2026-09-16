@@ -81,6 +81,7 @@ VENV_PATH=""
 PIP_LOG_FILE=""
 SA_KEY_PATH=""          # temp GAR service-account key (keyring auth)
 PIP_CONFIG_PATH=""      # temp 0600 pip.conf holding legacy index creds
+WHEEL_DIR=""            # temp dir holding the downloaded shadownet wheel
 
 # Overridable for tests (default: uname -s).
 RUNNER_OS="${SHADOWNET_RUNNER_OS:-$(uname -s 2>/dev/null || echo unknown)}"
@@ -97,6 +98,9 @@ cleanup() {
             rm -f "$f" 2>/dev/null || true
         fi
     done
+    if [ -n "$WHEEL_DIR" ] && [ -d "$WHEEL_DIR" ]; then
+        rm -rf "$WHEEL_DIR" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 
@@ -302,7 +306,6 @@ install_shadownet() {
         {
             printf '[global]\n'
             printf 'index-url = %s://%s:%s@%s\n' "$scheme" "${PYPI_USERNAME}" "${PYPI_PASSWORD}" "$rest"
-            printf 'extra-index-url = https://pypi.org/simple/\n'
         } > "$PIP_CONFIG_PATH"
         umask "$old_umask_pc"
         log "Using authenticated repository (credentials in 0600 pip.conf, not argv)"
@@ -324,30 +327,49 @@ install_shadownet() {
         log "Installing latest version"
     fi
 
-    log "Running pip install (this can take a few minutes)..."
+    # Dependency-confusion guard: pip does not prefer --index-url over
+    # --extra-index-url, so the `shadownet` requirement itself must only ever be
+    # resolved against the private index. Step 1 downloads just the shadownet
+    # wheel from there (--no-deps); step 2 installs that explicit file and lets
+    # its dependencies resolve from public PyPI, where shadownet is never looked up.
+    WHEEL_DIR="$(mktemp -d "${TMPDIR:-/tmp}/shadownet-wheel-XXXXXX")" || {
+        log "Failed to create temp directory for the wheel" Error
+        return 1
+    }
+
+    log "Fetching $package_spec from the private index (this can take a moment)..."
     local rc
     if [ "$used_gar_key" = true ]; then
-        GOOGLE_APPLICATION_CREDENTIALS="$SA_KEY_PATH" python -m pip install --no-cache-dir \
-            "$package_spec" \
+        GOOGLE_APPLICATION_CREDENTIALS="$SA_KEY_PATH" python -m pip download --no-cache-dir \
+            "$package_spec" --no-deps -d "$WHEEL_DIR" \
             --index-url "$index_url" \
-            --extra-index-url "https://pypi.org/simple/" \
             --trusted-host "$index_host" \
-            --trusted-host pypi.org \
-            --trusted-host files.pythonhosted.org \
             >"$PIP_LOG_FILE" 2>&1
         rc=$?
     else
-        PIP_CONFIG_FILE="$PIP_CONFIG_PATH" python -m pip install --no-cache-dir \
-            "$package_spec" \
+        PIP_CONFIG_FILE="$PIP_CONFIG_PATH" python -m pip download --no-cache-dir \
+            "$package_spec" --no-deps -d "$WHEEL_DIR" \
             --trusted-host "$index_host" \
-            --trusted-host pypi.org \
-            --trusted-host files.pythonhosted.org \
             >"$PIP_LOG_FILE" 2>&1
         rc=$?
     fi
     [ "$used_pip_config" = true ] || true
-
     if [ "$rc" -ne 0 ]; then
+        log "pip download failed. See $PIP_LOG_FILE for details" Error
+        cat "$PIP_LOG_FILE" >&2 || true
+        return 1
+    fi
+
+    local wheel
+    wheel="$(ls "$WHEEL_DIR"/shadownet-*.whl 2>/dev/null | head -n 1 || true)"
+    if [ -z "$wheel" ]; then
+        log "No shadownet wheel was downloaded to $WHEEL_DIR" Error
+        return 1
+    fi
+
+    log "Installing $(basename "$wheel") and its dependencies (this can take a few minutes)..."
+    # Plain pip: default (public) index, no private credentials needed or exposed.
+    if ! python -m pip install --no-cache-dir "$wheel" >>"$PIP_LOG_FILE" 2>&1; then
         log "pip install failed. See $PIP_LOG_FILE for details" Error
         cat "$PIP_LOG_FILE" >&2 || true
         return 1

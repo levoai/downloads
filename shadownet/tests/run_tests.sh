@@ -59,24 +59,31 @@ if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
             [ "${FAKE_SHADOWNET_INSTALLED:-yes}" = "yes" ] && exit 0
             [ -f "${ARGV_LOG:?}.installed" ] && exit 0
             exit 1 ;;
-        install)
-            # Only the shadownet install honours FAKE_PIP_RC (the keyring helper
-            # and pip bootstrap always succeed), and a successful shadownet
-            # install flips `pip show shadownet` to found.
-            is_shadownet=no
-            for a in "$@"; do case "$a" in shadownet|shadownet==*) is_shadownet=yes ;; esac; done
-            { for a in "$@"; do printf 'PIP|%s\n' "$a"; done
-              printf 'PIPENV_GAC|%s\n' "${GOOGLE_APPLICATION_CREDENTIALS:-}"
-              printf 'PIPENV_CFG|%s\n' "${PIP_CONFIG_FILE:-}"
+        download)
+            # Emulate fetching the shadownet wheel: record argv, honour FAKE_PIP_RC,
+            # and drop a fake wheel into the -d directory on success.
+            dest=""; prev=""
+            for a in "$@"; do [ "$prev" = "-d" ] && dest="$a"; prev="$a"; done
+            { for a in "$@"; do printf 'DL|%s\n' "$a"; done
+              printf 'DLENV_GAC|%s\n' "${GOOGLE_APPLICATION_CREDENTIALS:-}"
+              printf 'DLENV_CFG|%s\n' "${PIP_CONFIG_FILE:-}"
               if [ -n "${PIP_CONFIG_FILE:-}" ] && [ -f "$PIP_CONFIG_FILE" ]; then
                   printf 'PIPCONF|%s\n' "$(stat -f '%Lp' "$PIP_CONFIG_FILE" 2>/dev/null || stat -c '%a' "$PIP_CONFIG_FILE")"
                   sed 's/^/PIPCONFLINE|/' "$PIP_CONFIG_FILE"
               fi
             } >> "${ARGV_LOG:?}"
-            if [ "$is_shadownet" = yes ]; then
-                [ "${FAKE_PIP_RC:-0}" -eq 0 ] && : > "${ARGV_LOG:?}.installed"
-                exit "${FAKE_PIP_RC:-0}"
+            if [ "${FAKE_PIP_RC:-0}" -eq 0 ] && [ -n "$dest" ]; then
+                : > "$dest/shadownet-9.9.9-py3-none-any.whl"
             fi
+            exit "${FAKE_PIP_RC:-0}" ;;
+        install)
+            # Installing the downloaded wheel flips `pip show shadownet` to found.
+            is_shadownet=no
+            for a in "$@"; do case "$a" in *shadownet-*.whl) is_shadownet=yes ;; esac; done
+            { for a in "$@"; do printf 'PIP|%s\n' "$a"; done
+              printf 'PIPENV_CFG|%s\n' "${PIP_CONFIG_FILE:-}"
+            } >> "${ARGV_LOG:?}"
+            [ "$is_shadownet" = yes ] && : > "${ARGV_LOG:?}.installed"
             exit 0 ;;
     esac
     exit 0
@@ -174,10 +181,15 @@ run_runner FAKE_SHADOWNET_INSTALLED=no LEVOAI_GAR_SA_KEY_B64="$KEY_B64" -- insta
 assert_eq       "install (GAR key) exits 0"            "$RC" "0"
 A="$(argv)"
 assert_contains "GAR key: keyring helper installed"    "$A" "PIP|keyrings.google-artifactregistry-auth"
-assert_contains "GAR key: credential-free index url"   "$A" "PIP|https://us-python.pkg.dev/levoai/pypi-levo/simple/"
-assert_contains "GAR key: GOOGLE_APPLICATION_CREDENTIALS set" "$A" "PIPENV_GAC|$SANDBOX/gar-sa-key-"
-assert_contains "GAR key: trusted host derived from index" "$A" "PIP|us-python.pkg.dev"
-assert_contains "GAR key: latest shadownet requested"  "$A" "PIP|shadownet"
+assert_contains "GAR key: credential-free index url"   "$A" "DL|https://us-python.pkg.dev/levoai/pypi-levo/simple/"
+assert_contains "GAR key: GOOGLE_APPLICATION_CREDENTIALS set" "$A" "DLENV_GAC|$SANDBOX/gar-sa-key-"
+assert_contains "GAR key: trusted host derived from index" "$A" "DL|us-python.pkg.dev"
+assert_contains "GAR key: latest shadownet requested"  "$A" "DL|shadownet"
+assert_contains "GAR key: wheel fetched with --no-deps"  "$A" "DL|--no-deps"
+assert_absent   "GAR key: no public index in download"   "$(printf '%s\n' "$A" | grep '^DL|')" "pypi.org"
+assert_contains "GAR key: downloaded wheel installed"    "$A" "PIP|$SANDBOX/shadownet-wheel-"
+assert_absent   "GAR key: wheel install uses no private index" "$(printf '%s\n' "$A" | grep '^PIP|')" "--index-url"
+assert_absent   "GAR key: no --extra-index-url anywhere"  "$A" "--extra-index-url"
 assert_contains "GAR key: playwright chromium installed" "$A" "PW|chromium"
 assert_absent   "GAR key: key material not in argv"    "$A" "service_account"
 assert_absent   "GAR key: no --with-deps by default"   "$A" "PW|--with-deps"
@@ -186,30 +198,32 @@ assert_contains "install prints success banner"        "$OUT" "installed success
 run_runner FAKE_SHADOWNET_INSTALLED=no PYPI_USERNAME=oauth2accesstoken PYPI_PASSWORD=ya29.SECRET -- install
 assert_eq       "install (legacy token) exits 0"         "$RC" "0"
 A="$(argv)"
-assert_absent   "legacy: token not in pip argv"          "$(printf '%s\n' "$A" | grep '^PIP|')" "ya29.SECRET"
-assert_contains "legacy: PIP_CONFIG_FILE used"           "$A" "PIPENV_CFG|$SANDBOX/shadownet-pip-"
+assert_absent   "legacy: token not in pip argv"          "$(printf '%s\n' "$A" | grep -E '^(PIP|DL)\|')" "ya29.SECRET"
+assert_contains "legacy: PIP_CONFIG_FILE used for download" "$A" "DLENV_CFG|$SANDBOX/shadownet-pip-"
+assert_absent   "legacy: no pip.conf on wheel install"   "$A" "PIPENV_CFG|$SANDBOX/shadownet-pip-"
+assert_absent   "legacy: pip.conf has no public extra index" "$A" "PIPCONFLINE|extra-index-url"
 assert_contains "legacy: pip.conf is 0600"               "$A" "PIPCONF|600"
 assert_contains "legacy: pip.conf carries token in index-url" "$A" "PIPCONFLINE|index-url = https://oauth2accesstoken:ya29.SECRET@us-python.pkg.dev/levoai/pypi-levo/simple/"
-assert_absent   "legacy: no --index-url on argv"         "$(printf '%s\n' "$A" | grep '^PIP|')" "--index-url"
+assert_absent   "legacy: no --index-url on argv"         "$(printf '%s\n' "$A" | grep -E '^(PIP|DL)\|')" "--index-url"
 
 run_runner FAKE_SHADOWNET_INSTALLED=no PYPI_USERNAME=oauth2accesstoken -- install
 assert_eq       "legacy without password exits 1"  "$RC" "1"
 assert_contains "legacy without password reported" "$OUT" "PYPI_PASSWORD is required"
 
 run_runner FAKE_SHADOWNET_INSTALLED=no LEVOAI_GAR_SA_KEY_B64="$KEY_B64" SHADOWNET_VERSION=1.4.49 -- install
-assert_contains "version pin in pip argv" "$(argv)" "PIP|shadownet==1.4.49"
+assert_contains "version pin in pip argv" "$(argv)" "DL|shadownet==1.4.49"
 
 run_runner FAKE_SHADOWNET_INSTALLED=no LEVOAI_GAR_SA_KEY_B64="$KEY_B64" PYPI_INDEX_URL=http://127.0.0.1:8766/simple/ -- install
 A="$(argv)"
-assert_contains "PYPI_INDEX_URL override used"          "$A" "PIP|http://127.0.0.1:8766/simple/"
-assert_contains "PYPI_INDEX_URL override trusted host"  "$A" "PIP|127.0.0.1:8766"
+assert_contains "PYPI_INDEX_URL override used"          "$A" "DL|http://127.0.0.1:8766/simple/"
+assert_contains "PYPI_INDEX_URL override trusted host"  "$A" "DL|127.0.0.1:8766"
 
 run_runner FAKE_SHADOWNET_INSTALLED=no LEVOAI_GAR_SA_KEY_B64="$KEY_B64" -- install --with-deps
 assert_contains "--with-deps forwarded to playwright" "$(argv)" "PW|--with-deps"
 
 run_runner FAKE_SHADOWNET_INSTALLED=no LEVOAI_GAR_SA_KEY_B64="$KEY_B64" FAKE_PIP_RC=1 -- install
 assert_eq       "pip failure exits 1"    "$RC" "1"
-assert_contains "pip failure reported"   "$OUT" "pip install failed"
+assert_contains "pip failure reported"   "$OUT" "pip download failed"
 
 TEST_OS=Linux run_runner FAKE_SHADOWNET_INSTALLED=no LEVOAI_GAR_SA_KEY_B64="$KEY_B64" FAKE_PW_RC=1 -- install
 assert_eq       "playwright failure exits 1"        "$RC" "1"
@@ -229,7 +243,7 @@ assert_contains "scan argv: --no-headless by default" "$A" "SN|--no-headless"
 assert_absent   "scan argv: auth key not on argv"    "$A" "SECRETKEY"
 assert_contains "scan: auth key reaches shadownet via env" "$A" "SNENV_KEY_PRESENT|yes"
 assert_contains "scan: already-installed short-circuit" "$OUT" "already installed"
-assert_absent   "scan: no pip install when installed" "$A" "PIP|shadownet"
+assert_absent   "scan: no pip install when installed" "$A" "DL|shadownet"
 assert_contains "scan: config shows headed"          "$OUT" "headed (browser window visible)"
 
 run_runner LEVOAI_AUTH_KEY=k LEVOAI_ORG_ID=o -- scan --target-url https://app.example.com --headless
@@ -264,7 +278,7 @@ assert_contains "scan non-zero reported"              "$OUT" "exited with code 3
 run_runner FAKE_SHADOWNET_INSTALLED=no LEVOAI_GAR_SA_KEY_B64="$KEY_B64" LEVOAI_AUTH_KEY=k LEVOAI_ORG_ID=o -- scan --target-url https://app.example.com
 A="$(argv)"
 assert_eq       "scan auto-installs when missing"     "$RC" "0"
-assert_contains "auto-install: pip install ran"       "$A" "PIP|shadownet"
+assert_contains "auto-install: pip install ran"       "$A" "DL|shadownet"
 assert_contains "auto-install: browser installed"     "$A" "PW|chromium"
 assert_contains "auto-install: scan ran afterwards"   "$A" "SN|scan"
 
