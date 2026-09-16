@@ -68,7 +68,7 @@ if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
               printf 'DLENV_GAC|%s\n' "${GOOGLE_APPLICATION_CREDENTIALS:-}"
               printf 'DLENV_CFG|%s\n' "${PIP_CONFIG_FILE:-}"
               if [ -n "${PIP_CONFIG_FILE:-}" ] && [ -f "$PIP_CONFIG_FILE" ]; then
-                  printf 'PIPCONF|%s\n' "$(stat -f '%Lp' "$PIP_CONFIG_FILE" 2>/dev/null || stat -c '%a' "$PIP_CONFIG_FILE")"
+                  printf 'PIPCONF|%s\n' "$(stat -c '%a' "$PIP_CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$PIP_CONFIG_FILE")"
                   sed 's/^/PIPCONFLINE|/' "$PIP_CONFIG_FILE"
               fi
             } >> "${ARGV_LOG:?}"
