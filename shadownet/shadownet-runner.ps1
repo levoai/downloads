@@ -270,7 +270,7 @@ function Initialize-Venv {
     $exe = $script:PythonCmd[0]
     $extra = @()
     if ($script:PythonCmd.Count -gt 1) { $extra = $script:PythonCmd[1..($script:PythonCmd.Count - 1)] }
-    & $exe @extra -m venv $Config.VenvPath
+    & $exe @extra -m venv $Config.VenvPath | Out-Host
     if ($LASTEXITCODE -ne 0) {
         Write-Log "Failed to create virtual environment" -Level Error
         return $false
@@ -435,7 +435,7 @@ function Install-Browser {
     if ($WithDeps -and -not $IsWindows -and $PSVersionTable.PSVersion.Major -ge 6) {
         $pwArgs = @('-m', 'playwright', 'install', '--with-deps', 'chromium')
     }
-    & $python @pwArgs
+    & $python @pwArgs | Out-Host
     if ($LASTEXITCODE -ne 0) {
         Write-Log "Playwright browser installation failed" -Level Error
         return $false
@@ -480,7 +480,9 @@ function Invoke-Shadownet {
     $pre = @()
     if ($cmd.Count -gt 1) { $pre = $cmd[1..($cmd.Count - 1)] }
     $global:LASTEXITCODE = 0
-    & $exe @pre @Arguments
+    # Out-Host streams shadownet's live progress UI to the console instead of
+    # capturing it into this function's return value.
+    & $exe @pre @Arguments | Out-Host
     if ($null -eq $LASTEXITCODE) { return 1 }
     return $LASTEXITCODE
 }
@@ -537,17 +539,17 @@ function Test-TargetRequirements {
 
 function Get-ShadownetArgs {
     param([string]$Subcommand)
-    $args = @($Subcommand)
-    if ($TargetUrl) { $args += $TargetUrl }
-    if ($ConfigFile) { $args += @('--config', $ConfigFile) }
+    $snArgs = @($Subcommand)
+    if ($TargetUrl) { $snArgs += $TargetUrl }
+    if ($ConfigFile) { $snArgs += @('--config', $ConfigFile) }
     if ($Subcommand -eq 'crawl') {
         # The AI crawler needs an LLM key; the standard crawler is what headed
         # customers want to watch.
-        $args += @('--crawler-type', 'standard')
+        $snArgs += @('--crawler-type', 'standard')
     }
-    if ($Headless) { $args += '--headless' } else { $args += '--no-headless' }
-    if ($ShadownetArgs.Count -gt 0) { $args += $ShadownetArgs }
-    return $args
+    if ($Headless) { $snArgs += '--headless' } else { $snArgs += '--no-headless' }
+    if ($ShadownetArgs.Count -gt 0) { $snArgs += $ShadownetArgs }
+    return $snArgs
 }
 
 function Show-RunConfig {
@@ -564,12 +566,12 @@ function Show-RunConfig {
 
 function Invoke-Run {
     param([string]$Subcommand)
-    $args = Get-ShadownetArgs $Subcommand
-    Write-Log "Running: shadownet $($args -join ' ')"
+    $snArgs = Get-ShadownetArgs $Subcommand
+    Write-Log "Running: shadownet $($snArgs -join ' ')"
     Write-Host ""
     # Foreground, inheriting the console: shadownet renders a live progress UI
     # and, in headed mode, opens the browser window.
-    return (Invoke-Shadownet -Arguments $args)
+    return (Invoke-Shadownet -Arguments $snArgs)
 }
 
 # ============================================================================
