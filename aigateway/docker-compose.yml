@@ -1,0 +1,251 @@
+# AI Gateway — Docker Compose
+#
+# Profiles:
+#   dev   docker compose --profile dev up -d --build
+#         Builds the image from this checkout and mounts a host models directory
+#         (LEVOAI_MODELS_DIR, default ~/.aigateway-models).
+#
+#   prod  ./levo_aigateway.sh start   (or: docker compose --profile prod up -d)
+#         Pulls the SAME published images that helm/aigateway deploys. This is the
+#         reference deployment for customers running the gateway outside Kubernetes.
+#         The script also detects the host IP for the health heartbeat; plain
+#         `docker compose` works but leaves LEVOAI_HOST_IP unset unless you set it.
+#
+# Image parity with Helm (do not diverge — see helm/aigateway/values.yaml):
+#   data plane  docker.io/levoai/ai-gateway:<Chart.yaml appVersion>
+#   models      docker.io/levoai/ai-guardrails-models:latest
+#
+# AIGATEWAY_VERSION below is kept in sync with helm/aigateway/Chart.yaml appVersion
+# by scripts/bump-version.sh. Do not edit it by hand.
+#
+# Configuration is via a .env file next to this one, or the host environment.
+# Secrets (LEVOAI_AUTH_KEY) are passed through from the host and must never be
+# written into this file.
+
+name: aigateway
+
+# ---------------------------------------------------------------------------
+# Shared fragments
+# ---------------------------------------------------------------------------
+
+# Unbounded container logs are a common cause of full disks on long-running
+# gateway hosts. The proxy logs one line per request at info.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  # The gateway can spawn MCP stdio child processes (e.g. `npx <server>`).
+  # Without an init as PID 1 those children are never reaped and accumulate
+  # as zombies for the life of the container.
+  init: true
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+
+services:
+  # ==========================================================================
+  # DEVELOPMENT — build locally, mount a host models directory
+  #
+  # Populate the models directory first:
+  #   cargo run --bin llm-bastion-download-models -- --output-dir ~/.aigateway-models
+  # ==========================================================================
+  agentgateway-dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: native-runner
+      args:
+        VERSION: ${VERSION:-dev}
+        GIT_REVISION: ${GIT_REVISION:-unknown}
+    image: aigateway:dev
+    ports:
+      - "${AIGATEWAY_BIND_ADDR:-0.0.0.0}:${AIGATEWAY_PORT:-3000}:3000"
+      - "${AIGATEWAY_ADMIN_BIND_ADDR:-127.0.0.1}:${AIGATEWAY_ADMIN_PORT:-15021}:15021"
+    environment:
+      - LEVOAI_MODELS_BASE_PATH=/opt/models
+      - RUST_LOG=${RUST_LOG:-info}
+    volumes:
+      - ${LEVOAI_MODELS_DIR:-~/.aigateway-models}:/opt/models:ro
+      - ${AIGATEWAY_CONFIG:-./examples/guardrails/config.yaml}:/config.yaml:ro
+    command: ["-f", "/config.yaml"]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:15021/healthz/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+
+  # ==========================================================================
+  # PRODUCTION — models init container populates a shared volume (Helm pattern)
+  # ==========================================================================
+
+  # One-shot. Copies the ONNX models out of the models image into the shared
+  # volume that the gateway mounts read-only at /opt/models.
+  #
+  # The copy is idempotent: a content hash of the source tree is written to a
+  # marker file, and the ~6.7 GB copy is skipped when it already matches. This
+  # mirrors helm/aigateway/templates/models-loader-job.yaml so that a restart,
+  # or a re-pull of the same :latest tag, does not needlessly rewrite the volume.
+  models-init:
+    profiles: ["prod"]
+    image: ${MODELS_IMAGE_REGISTRY:-docker.io}/${MODELS_IMAGE_REPO:-levoai/ai-guardrails-models}:${MODELS_VERSION:-latest}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        MOUNT_PATH=/opt/models
+        MARKER="$${MOUNT_PATH}/.models-content-hash"
+
+        # Metadata-only hash (names + sizes) — detects a changed models image
+        # even when the tag is unchanged, without reading 6.7 GB.
+        SOURCE_HASH=$$(find /models -type f -exec ls -la {} \; 2>/dev/null | sort | sha256sum | cut -c1-16)
+        echo "source models hash: $${SOURCE_HASH}"
+
+        if [ -f "$${MARKER}" ] && [ "$$(cat "$${MARKER}")" = "$${SOURCE_HASH}" ]; then
+          echo "models already up to date — skipping copy"
+          exit 0
+        fi
+
+        echo "copying models into $${MOUNT_PATH} ..."
+        cp -r /models/. "$${MOUNT_PATH}/"
+        echo "$${SOURCE_HASH}" > "$${MARKER}"
+        echo "models loaded successfully"
+    volumes:
+      - models:/opt/models
+    restart: "no"
+    logging: *logging
+
+  agentgateway-prod:
+    profiles: ["prod"]
+    # No `build:` here on purpose. With both `image:` and `build:` declared,
+    # an image that is missing or misnamed does not fail — Compose silently
+    # falls back to building from this checkout, which is not what a customer
+    # deployment should ever do.
+    image: ${AIGATEWAY_IMAGE_REGISTRY:-docker.io}/${AIGATEWAY_IMAGE_REPO:-levoai/ai-gateway}:${AIGATEWAY_VERSION:-0.13.10}
+    pull_policy: missing
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      # Proxy port. Bind to a specific interface in production.
+      - "${AIGATEWAY_BIND_ADDR:-0.0.0.0}:${AIGATEWAY_PORT:-3000}:3000"
+      # Admin/readiness. Loopback-only by default: this listener serves config
+      # dumps and graceful-shutdown control and must not be publicly reachable.
+      - "${AIGATEWAY_ADMIN_BIND_ADDR:-127.0.0.1}:${AIGATEWAY_ADMIN_PORT:-15021}:15021"
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      # --- Levo SaaS control plane (optional) -----------------------------
+      # Listed without values so they are passed through only when set on the
+      # host; an empty value would look like "configured" to the gateway.
+      # LEVOAI_AUTH_KEY is a secret — export it, never commit it.
+      #
+      # LEVO_SAAS_URL and LEVO_REFRESH_TOKEN are the pre-rename spellings of the
+      # two above. A host that still exports those has to have them forwarded:
+      # the gateway resolves the old name, but only if Compose lets it into the
+      # container in the first place, and Compose forwards nothing it does not
+      # name here.
+      - LEVOAI_BASE_URL
+      - LEVO_SAAS_URL
+      - LEVOAI_AUTH_KEY
+      - LEVO_REFRESH_TOKEN
+      - LEVOAI_ORG_ID
+      - LEVOAI_ENV_NAME
+      - LEVOAI_SATELLITE_URL
+      # Host machine IP, reported as upstream_ip on the health heartbeat. Inside a
+      # container the gateway cannot discover it, so without this the field is
+      # omitted. ./levo_aigateway.sh start detects it on the host and exports it
+      # before `up`; a value set here in .env or in the shell takes precedence.
+      - LEVOAI_HOST_IP
+      # --- Transitional: pre-rename spellings -----------------------------
+      # Every LEVOAI_-prefixed name was introduced after 0.13.7, and the pinned
+      # image (0.13.8) reads only the old spelling. Sending the new name alone
+      # would be a silent no-op for anyone who sets one of these, so each knob
+      # below is written under both names from a single source expression.
+      #
+      # Both names are always set, and the gateway prefers the canonical one, so
+      # a rename-aware image reads the LEVOAI_ name and never logs the
+      # deprecation warning. Passing only the new name through (as the block
+      # above does) would not work here: on a pre-rename image the setting would
+      # vanish, and on a rename-aware image the legacy mirror would become the
+      # only name set, taking the deprecation path on every start.
+      #
+      # Each source expression falls back to the pre-rename name before its
+      # default, so a host that exports only the old spelling still configures
+      # the knob rather than having it overwritten by the default. Note this
+      # makes the old name on the *host* meaningful for these three; for the
+      # pass-throughs above the host name is forwarded as-is instead.
+      #
+      # Compose cannot omit a variable conditionally, so an unset knob still
+      # reaches the container as an assignment. Each default below is the value
+      # the gateway itself falls back to when the variable is absent, which
+      # keeps the mirror behaviourally identical to leaving it unset — an empty
+      # string would not: SAAS_POLL_INTERVAL="" fails to parse as a duration and
+      # aborts startup, and SAAS_MIN_POLICIES="" fails to parse as a number.
+      # LEVOAI_ENVIRONMENT_ID has no default, so it is passed as an empty string
+      # and `config.rs` maps empty back to unset.
+      #
+      # Once a release containing the rename is pinned above, delete every
+      # legacy line here and keep only the LEVOAI_ half of each pair —
+      # LEVOAI_ENVIRONMENT_ID, LEVOAI_SAAS_POLL_INTERVAL and
+      # LEVOAI_SAAS_MIN_POLICIES going back to plain pass-throughs.
+      - LEVOAI_MODELS_BASE_PATH=/opt/models
+      - MODELS_BASE_PATH=/opt/models
+      # Number of ONNX models loaded concurrently at startup. Lower this to 1
+      # or 2 if the host is memory-constrained — models already loaded stay
+      # resident while the next ones load, so concurrency raises peak RSS.
+      - LEVOAI_GUARDRAILS_WARMUP_CONCURRENCY=${LEVOAI_GUARDRAILS_WARMUP_CONCURRENCY:-${LLM_BASTION_WARMUP_CONCURRENCY:-4}}
+      - LLM_BASTION_WARMUP_CONCURRENCY=${LEVOAI_GUARDRAILS_WARMUP_CONCURRENCY:-${LLM_BASTION_WARMUP_CONCURRENCY:-4}}
+      # Forward-proxy mode: govern all outbound traffic, not just routed hosts.
+      - LEVOAI_FORWARD_PROXY_ENABLED=${LEVOAI_FORWARD_PROXY_ENABLED:-${FORWARD_PROXY_ENABLED:-true}}
+      - FORWARD_PROXY_ENABLED=${LEVOAI_FORWARD_PROXY_ENABLED:-${FORWARD_PROXY_ENABLED:-true}}
+      - LEVOAI_ENVIRONMENT_ID=${LEVOAI_ENVIRONMENT_ID:-${LEVO_ENVIRONMENT_ID:-${LEVO_ENV_ID:-}}}
+      - LEVO_ENVIRONMENT_ID=${LEVOAI_ENVIRONMENT_ID:-${LEVO_ENVIRONMENT_ID:-${LEVO_ENV_ID:-}}}
+      - LEVOAI_SAAS_POLL_INTERVAL=${LEVOAI_SAAS_POLL_INTERVAL:-${SAAS_POLL_INTERVAL:-60s}}
+      - SAAS_POLL_INTERVAL=${LEVOAI_SAAS_POLL_INTERVAL:-${SAAS_POLL_INTERVAL:-60s}}
+      # Reject any policy snapshot with fewer than N policies. Guards against a
+      # platform glitch hot-swapping the gateway to zero enforcement.
+      - LEVOAI_SAAS_MIN_POLICIES=${LEVOAI_SAAS_MIN_POLICIES:-${SAAS_MIN_POLICIES:-0}}
+      - SAAS_MIN_POLICIES=${LEVOAI_SAAS_MIN_POLICIES:-${SAAS_MIN_POLICIES:-0}}
+    volumes:
+      - models:/opt/models:ro
+      - ${AIGATEWAY_CONFIG:-./examples/guardrails/config.yaml}:/config.yaml:ro
+    command: ["-f", "/config.yaml"]
+    depends_on:
+      models-init:
+        condition: service_completed_successfully
+    <<: *hardening
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          # All 13 ONNX scanner sessions are held in never-evicting cache slots.
+          # Measured peak RSS during warmup is >5 GiB and 4 GiB OOM-crashloops;
+          # 8 GiB leaves headroom for body buffering and scan tensors. This
+          # matches helm/aigateway/values.yaml resources.limits.memory.
+          memory: ${AIGATEWAY_MEMORY_LIMIT:-8G}
+          cpus: "${AIGATEWAY_CPU_LIMIT:-2}"
+        reservations:
+          memory: ${AIGATEWAY_MEMORY_RESERVATION:-4G}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:15021/healthz/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      # Readiness is gated on ML model warmup, which takes ~10s on a fast host
+      # and considerably longer on constrained ones. Too short a start_period
+      # makes Compose report the container unhealthy while it is still warming.
+      start_period: 180s
+
+volumes:
+  models:
+    driver: local
