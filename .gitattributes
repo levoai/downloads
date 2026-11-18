@@ -1,0 +1,4 @@
+# Scoped so existing scripts elsewhere in the repo keep their line endings.
+# bash fails on CRLF scripts, so .sh stays LF even on Windows checkouts.
+dast-and-testrunner/*.sh text eol=lf
+dast-and-testrunner/*.ps1 text eol=crlf
