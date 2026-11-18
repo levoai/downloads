@@ -3,7 +3,7 @@
 Installs the Levo DAST workers AND the API test runner on a Kubernetes cluster with Helm.
 
 .DESCRIPTION
-Windows twin of install-all-helm.sh (Kubernetes twin of install-shadownet). An on-prem DAST scan hands its post-crawl API tests to
+Windows twin of install-all-helm.sh (Kubernetes twin of install-all). An on-prem DAST scan hands its post-crawl API tests to
 the test runner, so on-prem customers need both.
 
 Charts come from https://charts.levo.ai. The script passes --repo to Helm, so your local
@@ -263,7 +263,7 @@ function New-CertSecret {
     Invoke-Kubectl get namespace $Namespace 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) { Invoke-Kubectl create namespace $Namespace | Out-Null }
     $yaml = Invoke-Kubectl create secret generic $CertSecret --namespace $Namespace @fromArgs --dry-run=client -o yaml | Out-String
-    $yaml | & kubectl @KubectlArgs apply --namespace $Namespace -f - | Out-Null
+    $yaml | & kubectl @KubectlArgs apply --server-side --namespace $Namespace -f - | Out-Null
     if ($LASTEXITCODE -ne 0) { Stop-WithError 'Could not store the certificates.' }
 }
 

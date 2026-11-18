@@ -2,11 +2,11 @@
 
 ###########################################
 #             Usage:
-#             ./install-shadownet.sh [install] [--dast N] [--scheduled N] [--testrunner M] [--testrunner-scheduled M] [options]
-#             ./install-shadownet.sh scale     [--dast N] [--scheduled N] [--testrunner M] [--testrunner-scheduled M]
-#             ./install-shadownet.sh status
-#             ./install-shadownet.sh logs      [dast|scheduled|testrunner]
-#             ./install-shadownet.sh down
+#             ./install-all.sh [install] [--dast N] [--scheduled N] [--testrunner M] [--testrunner-scheduled M] [options]
+#             ./install-all.sh scale     [--dast N] [--scheduled N] [--testrunner M] [--testrunner-scheduled M]
+#             ./install-all.sh status
+#             ./install-all.sh logs      [dast|scheduled|testrunner]
+#             ./install-all.sh down
 ############################################
 #
 # Installs, resizes and removes the Levo DAST workers and the API test runner with
@@ -59,7 +59,7 @@ Counts (install and scale):
   --testrunner-scheduled M   API test runners for scheduled test runs.
   An omitted count is left as it is (scale), or taken from DAST_REPLICAS /
   DAST_SCHEDULED_REPLICAS / TESTRUNNER_REPLICAS / TESTRUNNER_SCHEDULED_REPLICAS in the
-  environment or .env, else 1 / 0 / 0 / 0 (install).
+  environment or .env, else 1 / 0 / 1 / 0 (install).
 
 Other options (install):
   --org ID            Organization ID (or LEVOAI_ORG_ID).
@@ -186,8 +186,8 @@ prepare_dir() {
     INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)"
     # Keep a copy beside docker-compose.yml, so "Manage it from <folder>" works whatever folder the
     # script was first run from.
-    if [ "$COMMAND" = "install" ] && [ ! -f "$INSTALL_DIR/install-shadownet.sh" ] && [ -f "${BASH_SOURCE[0]}" ]; then
-        cp "${BASH_SOURCE[0]}" "$INSTALL_DIR/install-shadownet.sh" && chmod +x "$INSTALL_DIR/install-shadownet.sh"
+    if [ "$COMMAND" = "install" ] && [ ! -f "$INSTALL_DIR/install-all.sh" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+        cp "${BASH_SOURCE[0]}" "$INSTALL_DIR/install-all.sh" && chmod +x "$INSTALL_DIR/install-all.sh"
     fi
     cd "$INSTALL_DIR"
 }
@@ -222,7 +222,7 @@ write_env() {
     (
         umask 077
         {
-            echo "# Written by install-shadownet.sh. Settings only: the auth key is never stored here."
+            echo "# Written by install-all.sh. Settings only: the auth key is never stored here."
             echo "LEVOAI_ORG_ID=$LEVOAI_ORG_ID"
             echo "LEVOAI_BASE_URL=${LEVOAI_BASE_URL:-$DEFAULT_BASE_URL}"
             echo "DAST_REPLICAS=$dast"
@@ -440,7 +440,7 @@ cmd_apply() {
     local dast scheduled testrunner testrunner_scheduled
     dast="$(resolve_count "$DAST" "$SERVICE_DAST" DAST_REPLICAS 1)"
     scheduled="$(resolve_count "$SCHEDULED" "$SERVICE_SCHEDULED" DAST_SCHEDULED_REPLICAS 0)"
-    testrunner="$(resolve_count "$TESTRUNNER" "$SERVICE_TESTRUNNER" TESTRUNNER_REPLICAS 0)"
+    testrunner="$(resolve_count "$TESTRUNNER" "$SERVICE_TESTRUNNER" TESTRUNNER_REPLICAS 1)"
     require_number "--dast" "$dast"
     require_number "--scheduled" "$scheduled"
     testrunner_scheduled="$(resolve_count "$TESTRUNNER_SCHEDULED" "$SERVICE_TESTRUNNER_SCHEDULED" TESTRUNNER_SCHEDULED_REPLICAS 0)"
@@ -472,10 +472,10 @@ cmd_apply() {
     if [ "$COMMAND" = "install" ]; then
         echo
         echo "Manage it from $INSTALL_DIR:"
-        echo "  ./install-shadownet.sh status"
-        echo "  ./install-shadownet.sh scale --dast 4 --testrunner 2"
-        echo "  ./install-shadownet.sh logs dast"
-        echo "  ./install-shadownet.sh down"
+        echo "  ./install-all.sh status"
+        echo "  ./install-all.sh scale --dast 4 --testrunner 2"
+        echo "  ./install-all.sh logs dast"
+        echo "  ./install-all.sh down"
     fi
 }
 

@@ -10,7 +10,7 @@
 #
 # Installs the Levo DAST workers AND the API test runner on a Kubernetes cluster with
 # Helm. An on-prem DAST scan hands its post-crawl API tests to the test runner, so
-# on-prem customers need both. This is the Kubernetes twin of install-shadownet.sh (Docker).
+# on-prem customers need both. This is the Kubernetes twin of install-all.sh (Docker).
 #
 # Charts come from https://charts.levo.ai. The script passes --repo to Helm, so your
 # local `helm repo` list is not changed.
@@ -273,7 +273,7 @@ create_cert_secret() {
     echo "Storing the certificates in Secret $CERT_SECRET ..."
     kc get namespace "$NAMESPACE" >/dev/null 2>&1 || kc create namespace "$NAMESPACE" >/dev/null
     kc create secret generic "$CERT_SECRET" --namespace "$NAMESPACE" "${from_args[@]}" --dry-run=client -o yaml \
-        | kc apply --namespace "$NAMESPACE" -f - >/dev/null || die "Could not store the certificates."
+        | kc apply --server-side --namespace "$NAMESPACE" -f - >/dev/null || die "Could not store the certificates."
 }
 
 install_release() {

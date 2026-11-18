@@ -3,7 +3,7 @@
 Installs, resizes and removes the Levo DAST workers and the API test runner with Docker Compose.
 
 .DESCRIPTION
-Windows twin of install-shadownet.sh. One scan, or one test run, runs per container, so the
+Windows twin of install-all.sh. One scan, or one test run, runs per container, so the
 number of containers is the number of things that run in parallel.
 
 Run it from a folder that already holds docker-compose.yml, or anywhere else: install
@@ -31,7 +31,7 @@ DAST workers for scheduled scans.
 API test runners.
 
 An omitted count is left as it is (scale), or taken from DAST_REPLICAS /
-DAST_SCHEDULED_REPLICAS / TESTRUNNER_REPLICAS / TESTRUNNER_SCHEDULED_REPLICAS in the environment or .env, else 1 / 0 / 0 / 0 (install).
+DAST_SCHEDULED_REPLICAS / TESTRUNNER_REPLICAS / TESTRUNNER_SCHEDULED_REPLICAS in the environment or .env, else 1 / 0 / 1 / 0 (install).
 
 .PARAMETER TestrunnerScheduled
 API test runners for scheduled test runs.
@@ -79,10 +79,10 @@ Allow more DAST workers than the memory check suggests.
 Do not wait for the DAST workers to report healthy.
 
 .EXAMPLE
-.\install-shadownet.ps1 -Dast 2 -Testrunner 1
+.\install-all.ps1 -Dast 2 -Testrunner 1
 
 .EXAMPLE
-.\install-shadownet.ps1 scale -Dast 4
+.\install-all.ps1 scale -Dast 4
 #>
 [CmdletBinding()]
 param(
@@ -177,7 +177,7 @@ function Enter-InstallDir {
     $script:InstallDir = (Resolve-Path -LiteralPath $target).Path
     # Keep a copy beside docker-compose.yml, so "Manage it from <folder>" works whatever folder the
     # script was first run from.
-    $copy = Join-Path $script:InstallDir 'install-shadownet.ps1'
+    $copy = Join-Path $script:InstallDir 'install-all.ps1'
     if ($Command -eq 'install' -and -not (Test-Path -LiteralPath $copy) -and $PSCommandPath) {
         Copy-Item -LiteralPath $PSCommandPath -Destination $copy
     }
@@ -194,7 +194,7 @@ function Write-EnvFile([int]$DastCount, [int]$ScheduledCount, [int]$TestrunnerCo
     }
     $baseUrl = if ($env:LEVOAI_BASE_URL) { $env:LEVOAI_BASE_URL } else { $DefaultBaseUrl }
     $lines = @(
-        '# Written by install-shadownet.ps1. Settings only: the auth key is never stored here.',
+        '# Written by install-all.ps1. Settings only: the auth key is never stored here.',
         "LEVOAI_ORG_ID=$env:LEVOAI_ORG_ID",
         "LEVOAI_BASE_URL=$baseUrl",
         "DAST_REPLICAS=$DastCount",
@@ -366,7 +366,7 @@ function Wait-Healthy {
             if (-not $state) { $state = 'missing' }
             if ($state -in @('exited', 'dead', 'restarting', 'missing')) {
                 Write-Host ''
-                Stop-WithError "A DAST worker keeps stopping. Run '.\install-shadownet.ps1 logs dast' to see why (a 401 means the auth key or organization ID is wrong)."
+                Stop-WithError "A DAST worker keeps stopping. Run '.\install-all.ps1 logs dast' to see why (a 401 means the auth key or organization ID is wrong)."
             }
             if ($state -ne 'healthy') { $pending++ }
         }
@@ -377,7 +377,7 @@ function Wait-Healthy {
     }
     Write-Host ''
     if ($pending -gt 0) {
-        [Console]::Error.WriteLine("Some DAST workers are still starting after ${HealthWaitSeconds}s. Check '.\install-shadownet.ps1 status'.")
+        [Console]::Error.WriteLine("Some DAST workers are still starting after ${HealthWaitSeconds}s. Check '.\install-all.ps1 status'.")
     }
 }
 
@@ -402,7 +402,7 @@ function Invoke-Apply {
 
     $dastCount = Resolve-Count $Dast $ServiceDast 'DAST_REPLICAS' 1
     $scheduledCount = Resolve-Count $Scheduled $ServiceScheduled 'DAST_SCHEDULED_REPLICAS' 0
-    $testrunnerCount = Resolve-Count $Testrunner $ServiceTestrunner 'TESTRUNNER_REPLICAS' 0
+    $testrunnerCount = Resolve-Count $Testrunner $ServiceTestrunner 'TESTRUNNER_REPLICAS' 1
     $testrunnerScheduledCount = Resolve-Count $TestrunnerScheduled $ServiceTestrunnerScheduled 'TESTRUNNER_SCHEDULED_REPLICAS' 0
     Test-Caps $dastCount $scheduledCount $testrunnerCount $testrunnerScheduledCount
     if ($Command -eq 'install') { Write-EnvFile $dastCount $scheduledCount $testrunnerCount $testrunnerScheduledCount }
@@ -431,10 +431,10 @@ function Invoke-Apply {
     if ($Command -eq 'install') {
         Write-Host ''
         Write-Host "Manage it from ${script:InstallDir}:"
-        Write-Host '  .\install-shadownet.ps1 status'
-        Write-Host '  .\install-shadownet.ps1 scale -Dast 4 -Testrunner 2'
-        Write-Host '  .\install-shadownet.ps1 logs dast'
-        Write-Host '  .\install-shadownet.ps1 down'
+        Write-Host '  .\install-all.ps1 status'
+        Write-Host '  .\install-all.ps1 scale -Dast 4 -Testrunner 2'
+        Write-Host '  .\install-all.ps1 logs dast'
+        Write-Host '  .\install-all.ps1 down'
     }
 }
 
