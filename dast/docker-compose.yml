@@ -8,6 +8,7 @@
 #   dast         DAST worker for on-demand scans            (default on)
 #   api-testing  API test runner                            (default on)
 #   scheduled    DAST worker for scheduled scans            (default off)
+#   api-testing-scheduled  API test runner for scheduled scans (default off)
 #
 # Scale a service with --scale, never by copying it:
 #   docker compose up -d --scale dast-worker=3 --scale testrunner=2
@@ -43,6 +44,18 @@ x-dast-identity: &dast-identity
   LEVOAI_GROUP: ${DAST_GROUP:-}
   LEVOAI_WORKSPACE_ID: ${LEVOAI_WORKSPACE_ID:-}
 
+# Custom CA and client certificates. Each variable reaches the worker only when it is set;
+# an unset one is left unset in the container. Point them at files under /etc/shadownet/certs,
+# which is ./certs on this host (the install script's --ca-cert and friends fill this in).
+x-dast-tls: &dast-tls
+  LEVOAI_CA_CERT:
+  LEVOAI_TEMPORAL_CA_CERT:
+  LEVOAI_TEMPORAL_TLS_SERVER_NAME:
+  CA_CERT_PATH:
+  CLIENT_CERT_PATH:
+  CLIENT_KEY_PATH:
+  VERIFY_SSL:
+
 x-dast-worker: &dast-worker
   image: ${DAST_IMAGE_REPO:-levoai/levoai-shadownet}:${DAST_IMAGE_TAG:-stable}
   pull_policy: missing
@@ -59,6 +72,8 @@ x-dast-worker: &dast-worker
   security_opt:
     - no-new-privileges:true
   logging: *logging
+  volumes:
+    - ./certs:/etc/shadownet/certs:ro
   deploy:
     replicas: ${DAST_REPLICAS:-1}
     resources:
@@ -67,12 +82,35 @@ x-dast-worker: &dast-worker
         memory: ${DAST_MEMORY_LIMIT:-2g}
         cpus: "${DAST_CPU_LIMIT:-2}"
 
+x-testrunner: &testrunner
+  image: ${TESTRUNNER_IMAGE_REPO:-levoai/levo}:${TESTRUNNER_IMAGE_TAG:-stable}
+  pull_policy: missing
+  restart: unless-stopped
+  logging: *logging
+  # The entrypoint starts as root and then drops to LOCAL_USER_ID, so this
+  # service must not set user: or read_only:.
+  environment:
+    LOCAL_USER_ID: ${LOCAL_USER_ID:-1000}
+    LOCAL_GROUP_ID: ${LOCAL_GROUP_ID:-1000}
+    LEVO_BASE_URL: ${LEVOAI_BASE_URL:-https://api.levo.ai}
+    LEVOAI_ORG_ID: ${LEVOAI_ORG_ID:?Set LEVOAI_ORG_ID (export it or put it in .env)}
+    TERM: xterm-256color
+  # Lets API tests reach a service on the host. Docker Desktop provides the
+  # name itself; this makes Linux Engine behave the same.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+x-testrunner-resources: &testrunner-resources
+  limits:
+    memory: ${TESTRUNNER_MEMORY_LIMIT:-1g}
+    cpus: "${TESTRUNNER_CPU_LIMIT:-1}"
+
 services:
   dast-worker:
     <<: *dast-worker
     profiles: ["dast"]
     environment:
-      <<: *dast-identity
+      <<: [*dast-identity, *dast-tls]
       LEVOAI_AUTH_KEY: ${LEVOAI_AUTH_KEY:?Set LEVOAI_AUTH_KEY (export it or put it in .env)}
       LEVOAI_ORG_ID: ${LEVOAI_ORG_ID:?Set LEVOAI_ORG_ID (export it or put it in .env)}
       LEVOAI_BASE_URL: ${LEVOAI_BASE_URL:-https://api.levo.ai}
@@ -88,28 +126,18 @@ services:
           memory: ${DAST_MEMORY_LIMIT:-2g}
           cpus: "${DAST_CPU_LIMIT:-2}"
     environment:
-      <<: *dast-identity
+      <<: [*dast-identity, *dast-tls]
       SHADOWNET_SCHEDULED: "true"
       LEVOAI_AUTH_KEY: ${LEVOAI_AUTH_KEY:?Set LEVOAI_AUTH_KEY (export it or put it in .env)}
       LEVOAI_ORG_ID: ${LEVOAI_ORG_ID:?Set LEVOAI_ORG_ID (export it or put it in .env)}
       LEVOAI_BASE_URL: ${LEVOAI_BASE_URL:-https://api.levo.ai}
 
   testrunner:
+    <<: *testrunner
     profiles: ["api-testing"]
-    image: ${TESTRUNNER_IMAGE_REPO:-levoai/levo}:${TESTRUNNER_IMAGE_TAG:-stable}
-    pull_policy: missing
-    restart: unless-stopped
-    logging: *logging
     deploy:
       replicas: ${TESTRUNNER_REPLICAS:-1}
-    # The entrypoint starts as root and then drops to LOCAL_USER_ID, so this
-    # service must not set user: or read_only:.
-    environment:
-      LOCAL_USER_ID: ${LOCAL_USER_ID:-1000}
-      LOCAL_GROUP_ID: ${LOCAL_GROUP_ID:-1000}
-      LEVO_BASE_URL: ${LEVOAI_BASE_URL:-https://api.levo.ai}
-      LEVOAI_ORG_ID: ${LEVOAI_ORG_ID:?Set LEVOAI_ORG_ID (export it or put it in .env)}
-      TERM: xterm-256color
+      resources: *testrunner-resources
     # The test runner takes --key and --organization only as flags.
     # The group is normalised by the test runner (lowercased, punctuation -> "_").
     # Do not set LEVO_RUNNER_ID: pinning it would put every replica on one queue.
@@ -121,7 +149,21 @@ services:
       - ${LEVOAI_ORG_ID:?Set LEVOAI_ORG_ID (export it or put it in .env)}
       - --group
       - ${TESTRUNNER_GROUP:-}
-    # Lets API tests reach a service on the host. Docker Desktop provides the
-    # name itself; this makes Linux Engine behave the same.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+
+  # Same test runner, but it takes only tests started by a schedule.
+  testrunner-scheduled:
+    <<: *testrunner
+    profiles: ["api-testing-scheduled"]
+    deploy:
+      replicas: ${TESTRUNNER_SCHEDULED_REPLICAS:-1}
+      resources: *testrunner-resources
+    command:
+      - start
+      - --key
+      - ${LEVOAI_AUTH_KEY:?Set LEVOAI_AUTH_KEY (export it or put it in .env)}
+      - --organization
+      - ${LEVOAI_ORG_ID:?Set LEVOAI_ORG_ID (export it or put it in .env)}
+      - --scheduled
+      - "true"
+      - --group
+      - ${TESTRUNNER_GROUP:-}
