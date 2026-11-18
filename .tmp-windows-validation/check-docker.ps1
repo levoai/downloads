@@ -120,3 +120,4 @@ Pop-Location
 
 if ($failures -gt 0) { Write-Host "`n$failures check(s) FAILED"; exit 1 }
 Write-Host "`nall checks passed"
+exit 0

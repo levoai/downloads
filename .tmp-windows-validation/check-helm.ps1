@@ -94,3 +94,4 @@ Assert-That ($r.Code -ne 0 -and $r.Out -match 'install only') 'scale refuses cer
 
 if ($failures -gt 0) { Write-Host "`n$failures check(s) FAILED"; exit 1 }
 Write-Host "`nall checks passed"
+exit 0
