@@ -34,15 +34,13 @@ x-logging: &logging
 # Everything that decides how a replica identifies itself to Levo lives in this
 # one anchor, so the DAST runner registration work can change it in one place:
 #   - LEVOAI_GROUP        which group (task queue) the worker joins
-#   - LEVOAI_WORKSPACE_ID workspace used for the health heartbeat
 # Today a replica's id is its container hostname (unique per replica). Do not pin
 # LEVOAI_COMPONENT_ID or LEVOAI_HOSTNAME here: that would give all replicas one id.
 # ---------------------------------------------------------------------------
 x-dast-identity: &dast-identity
   # Left empty means "no group": the worker listens on the bare <org> queue.
   # The DAST worker uses this value exactly as typed, so it is case-sensitive.
-  LEVOAI_GROUP: ${DAST_GROUP:-}
-  LEVOAI_WORKSPACE_ID: ${LEVOAI_WORKSPACE_ID:-}
+  LEVOAI_GROUP: ${RUNNER_GROUP:-}
 
 # Custom CA and client certificates. Each variable reaches the worker only when it is set;
 # an unset one is left unset in the container. Point them at files under /etc/shadownet/certs,
@@ -148,7 +146,7 @@ services:
       - --organization
       - ${LEVOAI_ORG_ID:?Set LEVOAI_ORG_ID (export it or put it in .env)}
       - --group
-      - ${TESTRUNNER_GROUP:-}
+      - ${RUNNER_GROUP:-}
 
   # Same test runner, but it takes only tests started by a schedule.
   testrunner-scheduled:
@@ -166,4 +164,4 @@ services:
       - --scheduled
       - "true"
       - --group
-      - ${TESTRUNNER_GROUP:-}
+      - ${RUNNER_GROUP:-}

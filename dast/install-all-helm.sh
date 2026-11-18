@@ -69,7 +69,6 @@ Options:
   --group NAME        Group for DAST workers and test runners. Default: none.
   --region us|india   API URL (us = ${DEFAULT_BASE_URL}, india = ${INDIA_BASE_URL}).
   --base-url URL      A specific API URL (overrides --region).
-  --workspace ID      Workspace ID (DAST health heartbeat; test runner registration).
   --image-tag TAG     DAST worker image tag. Default: the chart's.
   --testrunner-image-tag TAG   Test runner image tag. Default: the chart's.
   --dast-chart-version V       Pin the DAST chart version.
@@ -83,8 +82,7 @@ Options:
   --yes               Do not ask to confirm the cluster.
   -h, --help          Show this help.
 
-Environment: LEVOAI_AUTH_KEY (prompted for if unset), LEVOAI_ORG_ID, LEVOAI_BASE_URL,
-LEVOAI_WORKSPACE_ID.
+Environment: LEVOAI_AUTH_KEY (prompted for if unset), LEVOAI_ORG_ID, LEVOAI_BASE_URL.
 EOF
 }
 
@@ -121,7 +119,6 @@ ORG="${LEVOAI_ORG_ID:-}"
 GROUP=""
 BASE_URL="${LEVOAI_BASE_URL:-}"
 REGION=""
-WORKSPACE="${LEVOAI_WORKSPACE_ID:-}"
 IMAGE_TAG=""
 TESTRUNNER_IMAGE_TAG=""
 DAST_CHART_VERSION=""
@@ -146,7 +143,6 @@ while [ "$#" -gt 0 ]; do
         --group) need_value "$1" "$#"; GROUP="$2"; shift 2 ;;
         --region) need_value "$1" "$#"; REGION="$2"; shift 2 ;;
         --base-url) need_value "$1" "$#"; BASE_URL="$2"; shift 2 ;;
-        --workspace) need_value "$1" "$#"; WORKSPACE="$2"; shift 2 ;;
         --image-tag) need_value "$1" "$#"; IMAGE_TAG="$2"; shift 2 ;;
         --testrunner-image-tag) need_value "$1" "$#"; TESTRUNNER_IMAGE_TAG="$2"; shift 2 ;;
         --dast-chart-version) need_value "$1" "$#"; DAST_CHART_VERSION="$2"; shift 2 ;;
@@ -225,7 +221,6 @@ yaml_quote() {
 
 # Every string value goes to Helm as YAML on stdin: the key stays off the command line, and group
 # names with commas or spaces need no --set escaping.
-# Registration-sensitive settings (group, workspace) are kept together in this block.
 values_yaml() {
     local kind="$1"
     printf 'key: %s\n' "$(yaml_quote "$LEVOAI_AUTH_KEY")"
@@ -233,9 +228,8 @@ values_yaml() {
     printf 'levoBaseUrl: %s\n' "$(yaml_quote "$BASE_URL")"
     [ -z "$GROUP" ] || printf 'group: %s\n' "$(yaml_quote "$GROUP")"
     if [ "$kind" = "dast" ]; then
-        if [ -n "$WORKSPACE$CA_FILE_NAME$TARGET_CA_FILE_NAME$CLIENT_CERT_FILE_NAME$CLIENT_KEY_FILE_NAME" ]; then
+        if [ -n "$CA_FILE_NAME$TARGET_CA_FILE_NAME$CLIENT_CERT_FILE_NAME$CLIENT_KEY_FILE_NAME" ]; then
             printf 'extraEnv:\n'
-            [ -z "$WORKSPACE" ] || printf '  LEVOAI_WORKSPACE_ID: %s\n' "$(yaml_quote "$WORKSPACE")"
             [ -z "$CA_FILE_NAME" ] || printf '  LEVOAI_CA_CERT: %s\n' "$(yaml_quote "$CERT_MOUNT_PATH/$CA_FILE_NAME")"
             [ -z "$TARGET_CA_FILE_NAME" ] || printf '  CA_CERT_PATH: %s\n' "$(yaml_quote "$CERT_MOUNT_PATH/$TARGET_CA_FILE_NAME")"
             [ -z "$CLIENT_CERT_FILE_NAME" ] || printf '  CLIENT_CERT_PATH: %s\n' "$(yaml_quote "$CERT_MOUNT_PATH/$CLIENT_CERT_FILE_NAME")"
@@ -246,7 +240,6 @@ values_yaml() {
         fi
         [ -z "$IMAGE_TAG" ] || printf 'image:\n  tagOverride: %s\n' "$(yaml_quote "$IMAGE_TAG")"
     else
-        [ -z "$WORKSPACE" ] || printf 'workspace: %s\n' "$(yaml_quote "$WORKSPACE")"
         [ -z "$TESTRUNNER_IMAGE_TAG" ] || printf 'image:\n  tag: %s\n' "$(yaml_quote "$TESTRUNNER_IMAGE_TAG")"
     fi
 }

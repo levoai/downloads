@@ -59,9 +59,6 @@ us or india. Picks the API URL.
 .PARAMETER BaseUrl
 A specific API URL. Overrides -Region. Defaults to LEVOAI_BASE_URL.
 
-.PARAMETER Workspace
-Workspace ID (DAST health heartbeat; test runner registration). Defaults to LEVOAI_WORKSPACE_ID.
-
 .PARAMETER ImageTag
 DAST worker image tag. Default: the chart's.
 
@@ -109,7 +106,6 @@ param(
     [ValidateSet('us', 'india')]
     [string]$Region,
     [string]$BaseUrl = $env:LEVOAI_BASE_URL,
-    [string]$Workspace = $env:LEVOAI_WORKSPACE_ID,
     [string]$ImageTag,
     [string]$TestrunnerImageTag,
     [string]$DastChartVersion,
@@ -217,7 +213,6 @@ function ConvertTo-YamlQuoted([string]$Value) {
 
 # Every string value goes to Helm as YAML on stdin: the key stays off the command line, and group
 # names with commas or spaces need no --set escaping.
-# Registration-sensitive settings (group, workspace) are kept together in this block.
 function Get-ValuesYaml([string]$Kind) {
     $lines = @(
         "key: $(ConvertTo-YamlQuoted $env:LEVOAI_AUTH_KEY)",
@@ -227,7 +222,6 @@ function Get-ValuesYaml([string]$Kind) {
     if ($script:Group) { $lines += "group: $(ConvertTo-YamlQuoted $script:Group)" }
     if ($Kind -eq 'dast') {
         $envLines = @()
-        if ($script:Workspace) { $envLines += "  LEVOAI_WORKSPACE_ID: $(ConvertTo-YamlQuoted $script:Workspace)" }
         foreach ($pair in @(@('LEVOAI_CA_CERT', 'ca'), @('CA_CERT_PATH', 'target'), @('CLIENT_CERT_PATH', 'cert'), @('CLIENT_KEY_PATH', 'key'))) {
             if ($script:CertFiles.ContainsKey($pair[1])) { $envLines += "  $($pair[0]): $(ConvertTo-YamlQuoted "$CertMountPath/$($script:CertFiles[$pair[1]])")" }
         }
@@ -237,7 +231,6 @@ function Get-ValuesYaml([string]$Kind) {
         }
         if ($script:ImageTag) { $lines += @('image:', "  tagOverride: $(ConvertTo-YamlQuoted $script:ImageTag)") }
     } else {
-        if ($script:Workspace) { $lines += "workspace: $(ConvertTo-YamlQuoted $script:Workspace)" }
         if ($script:TestrunnerImageTag) { $lines += @('image:', "  tag: $(ConvertTo-YamlQuoted $script:TestrunnerImageTag)") }
     }
     return (($lines -join "`n") + "`n")

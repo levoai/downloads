@@ -60,9 +60,6 @@ us or india. Picks the API URL.
 .PARAMETER BaseUrl
 A specific API URL. Overrides -Region.
 
-.PARAMETER Workspace
-Workspace ID for the DAST health heartbeat.
-
 .PARAMETER ImageTag
 Image tag for both images. Default: stable
 
@@ -101,11 +98,10 @@ param(
     [string]$ClientCert,
     [string]$ClientKey,
     [string]$Org = $env:LEVOAI_ORG_ID,
-    [string]$Group,
+    [string]$Group = $env:RUNNER_GROUP,
     [ValidateSet('us', 'india')]
     [string]$Region,
     [string]$BaseUrl = $env:LEVOAI_BASE_URL,
-    [string]$Workspace = $env:LEVOAI_WORKSPACE_ID,
     [string]$ImageTag,
     [string]$Dir,
     [string]$Ref = 'main',
@@ -202,8 +198,7 @@ function Write-EnvFile([int]$DastCount, [int]$ScheduledCount, [int]$TestrunnerCo
         "TESTRUNNER_REPLICAS=$TestrunnerCount",
         "TESTRUNNER_SCHEDULED_REPLICAS=$TestrunnerScheduledCount"
     )
-    if ($Group) { $lines += @("DAST_GROUP=$Group", "TESTRUNNER_GROUP=$Group") }
-    if ($Workspace) { $lines += "LEVOAI_WORKSPACE_ID=$Workspace" }
+    if ($Group) { $lines += "RUNNER_GROUP=$Group" }
     if ($ImageTag) { $lines += @("DAST_IMAGE_TAG=$ImageTag", "TESTRUNNER_IMAGE_TAG=$ImageTag") }
     foreach ($name in 'LEVOAI_CA_CERT', 'CA_CERT_PATH', 'CLIENT_CERT_PATH', 'CLIENT_KEY_PATH') {
         $value = [Environment]::GetEnvironmentVariable($name)
@@ -298,10 +293,8 @@ function Set-Settings {
         $url = if ($script:Region -eq 'india') { $IndiaBaseUrl } else { $DefaultBaseUrl }
     }
     if ($url) { $env:LEVOAI_BASE_URL = $url }
-    if ($script:Workspace) { $env:LEVOAI_WORKSPACE_ID = $script:Workspace }
     if ($script:Group) {
-        $env:DAST_GROUP = $script:Group
-        $env:TESTRUNNER_GROUP = $script:Group
+        $env:RUNNER_GROUP = $script:Group
     }
     if ($script:ImageTag) {
         $env:DAST_IMAGE_TAG = $script:ImageTag
@@ -383,8 +376,8 @@ function Wait-Healthy {
 
 function Invoke-Apply {
     # .env is read by Docker Compose, which treats these characters specially.
-    if ("$Group$Workspace$ImageTag" -match '[$#"''\\]') {
-        Stop-WithError '-Group, -Workspace and -ImageTag cannot contain $ # quotes or backslashes.'
+    if ("$Group$ImageTag" -match '[$#"''\\]') {
+        Stop-WithError '-Group and -ImageTag cannot contain $ # quotes or backslashes.'
     }
     if ($Command -eq 'scale' -and ($CaCert -or $TargetCaCert -or $ClientCert -or $ClientKey)) {
         Stop-WithError 'Certificate options apply to install only. Edit .env and run install again to change them.'

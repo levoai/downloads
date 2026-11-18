@@ -63,9 +63,8 @@ Counts (install and scale):
 
 Other options (install):
   --org ID            Organization ID (or LEVOAI_ORG_ID).
-  --group NAME        Group for DAST workers and test runners (or DAST_GROUP / TESTRUNNER_GROUP).
+  --group NAME        Group for DAST workers and test runners (or RUNNER_GROUP).
   --region us|india   API URL.   --base-url URL   A specific API URL.
-  --workspace ID      Workspace ID for the DAST health heartbeat.
   --image-tag TAG     Image tag for both images. Default: stable
   --dir DIR           Install folder when docker-compose.yml is downloaded. Default: ./${DEFAULT_DIR}
   --ref REF           Branch or tag of levoai/downloads to download from. Default: main
@@ -113,10 +112,9 @@ FORCE="false"
 WAIT="true"
 LOG_TARGET=""
 ORG="${LEVOAI_ORG_ID:-}"
-GROUP=""
+GROUP="${RUNNER_GROUP:-}"
 BASE_URL="${LEVOAI_BASE_URL:-}"
 REGION=""
-WORKSPACE="${LEVOAI_WORKSPACE_ID:-}"
 IMAGE_TAG=""
 INSTALL_DIR=""
 REF="main"
@@ -139,7 +137,6 @@ while [ "$#" -gt 0 ]; do
         --group) need_value "$1" "$#"; GROUP="$2"; shift 2 ;;
         --region) need_value "$1" "$#"; REGION="$2"; shift 2 ;;
         --base-url) need_value "$1" "$#"; BASE_URL="$2"; shift 2 ;;
-        --workspace) need_value "$1" "$#"; WORKSPACE="$2"; shift 2 ;;
         --image-tag) need_value "$1" "$#"; IMAGE_TAG="$2"; shift 2 ;;
         --dir) need_value "$1" "$#"; INSTALL_DIR="$2"; shift 2 ;;
         --ref) need_value "$1" "$#"; REF="$2"; shift 2 ;;
@@ -229,9 +226,7 @@ write_env() {
             echo "DAST_SCHEDULED_REPLICAS=$scheduled"
             echo "TESTRUNNER_REPLICAS=$testrunner"
             echo "TESTRUNNER_SCHEDULED_REPLICAS=$testrunner_scheduled"
-            [ -z "$GROUP" ] || echo "DAST_GROUP=$GROUP"
-            [ -z "$GROUP" ] || echo "TESTRUNNER_GROUP=$GROUP"
-            [ -z "$WORKSPACE" ] || echo "LEVOAI_WORKSPACE_ID=$WORKSPACE"
+            [ -z "$GROUP" ] || echo "RUNNER_GROUP=$GROUP"
             [ -z "$IMAGE_TAG" ] || echo "DAST_IMAGE_TAG=$IMAGE_TAG"
             [ -z "$IMAGE_TAG" ] || echo "TESTRUNNER_IMAGE_TAG=$IMAGE_TAG"
             [ -z "${LEVOAI_CA_CERT:-}" ] || echo "LEVOAI_CA_CERT=$LEVOAI_CA_CERT"
@@ -333,9 +328,8 @@ export_settings() {
         esac
     fi
     [ -z "$BASE_URL" ] || export LEVOAI_BASE_URL="$BASE_URL"
-    [ -z "$WORKSPACE" ] || export LEVOAI_WORKSPACE_ID="$WORKSPACE"
     if [ -n "$GROUP" ]; then
-        export DAST_GROUP="$GROUP" TESTRUNNER_GROUP="$GROUP"
+        export RUNNER_GROUP="$GROUP"
     fi
     if [ -n "$IMAGE_TAG" ]; then
         export DAST_IMAGE_TAG="$IMAGE_TAG" TESTRUNNER_IMAGE_TAG="$IMAGE_TAG"
@@ -424,8 +418,8 @@ summary() {
 
 cmd_apply() {
     # .env is read by Docker Compose, which treats these characters specially.
-    case "$GROUP$WORKSPACE$IMAGE_TAG" in
-        *[\$\#\"\'\\]*) die "--group, --workspace and --image-tag cannot contain \$ # quotes or backslashes." ;;
+    case "$GROUP$IMAGE_TAG" in
+        *[\$\#\"\'\\]*) die "--group and --image-tag cannot contain \$ # quotes or backslashes." ;;
     esac
     if [ "$COMMAND" = "scale" ] && [ -n "$CA_CERT$TARGET_CA_CERT$CLIENT_CERT$CLIENT_KEY" ]; then
         die "Certificate options apply to install only. Edit .env and run install again to change them."
