@@ -1,0 +1,114 @@
+name: TEMP validate install scripts (do not merge)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.tmp-windows-validation/**'
+      - '.github/workflows/tmp-validate-install-scripts.yml'
+
+env:
+  RAW: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.event.pull_request.head.sha || github.sha }}/dast-and-testrunner
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build a stub docker.exe that logs its arguments
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'stub'
+          New-Item -ItemType Directory $dir | Out-Null
+          @'
+          using System;
+          using System.IO;
+          public static class Stub {
+            public static int Main(string[] a) {
+              var log = Environment.GetEnvironmentVariable("STUB_LOG");
+              if (log != null) {
+                var sb = new System.Text.StringBuilder("CALL\n");
+                foreach (var x in a) sb.Append("ARG:" + x + "\n");
+                sb.Append("ENVKEY:" + (Environment.GetEnvironmentVariable("LEVOAI_AUTH_KEY") != null ? "set" : "") + "\n");
+                File.AppendAllText(log, sb.ToString());
+              }
+              if (a.Length > 0 && a[0] == "inspect") Console.Out.Write("healthy\n");
+              return 0;
+            }
+          }
+          '@ | Set-Content "$dir\stub.cs"
+          Add-Type -TypeDefinition (Get-Content -Raw "$dir\stub.cs") -OutputType ConsoleApplication -OutputAssembly "$dir\docker.exe"
+          "STUB_DIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Repo copy, Windows PowerShell 5.1
+        shell: powershell
+        run: .\.tmp-windows-validation\check.ps1 -Script "$PWD\dast-and-testrunner\install-shadownet.ps1" -StubDir $env:STUB_DIR
+
+      - name: Repo copy, PowerShell 7
+        shell: pwsh
+        run: ./.tmp-windows-validation/check.ps1 -Script "$PWD\dast-and-testrunner\install-shadownet.ps1" -StubDir $env:STUB_DIR
+
+      - name: Download from raw.githubusercontent.com (what customers do), Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP 'dl51'; New-Item -ItemType Directory $dest | Out-Null
+          foreach ($i in 1..8) {
+            try { Invoke-WebRequest -UseBasicParsing "$env:RAW/install-shadownet.ps1" -OutFile "$dest\install-shadownet.ps1"; break }
+            catch { Write-Host "retry $i : $($_.Exception.Message)"; Start-Sleep 15 }
+          }
+          if (-not (Test-Path "$dest\install-shadownet.ps1")) { throw 'download failed' }
+          $a = (Get-Content -Raw "$dest\install-shadownet.ps1") -replace "`r`n", "`n"
+          $b = (Get-Content -Raw "dast-and-testrunner\install-shadownet.ps1") -replace "`r`n", "`n"
+          if ($a -ne $b) { throw 'downloaded file differs from the repo file' }
+          "downloaded bytes: $((Get-Item "$dest\install-shadownet.ps1").Length); first bytes: $((Get-Content -Encoding Byte -TotalCount 3 "$dest\install-shadownet.ps1") -join ' ')"
+          .\.tmp-windows-validation\check.ps1 -Script "$dest\install-shadownet.ps1" -StubDir $env:STUB_DIR
+
+      - name: Download and run with PowerShell 7
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP 'dl7'; New-Item -ItemType Directory $dest | Out-Null
+          Invoke-WebRequest "$env:RAW/install-shadownet.ps1" -OutFile "$dest/install-shadownet.ps1"
+          ./.tmp-windows-validation/check.ps1 -Script "$dest/install-shadownet.ps1" -StubDir $env:STUB_DIR
+
+      - name: Run through cmd.exe the way the docs will show it
+        shell: cmd
+        run: |
+          set PATH=%STUB_DIR%;%PATH%
+          set STUB_LOG=%RUNNER_TEMP%\cmd.log
+          set LEVOAI_AUTH_KEY=SECRETKEY123
+          powershell -NoProfile -ExecutionPolicy Bypass -File dast-and-testrunner\install-shadownet.ps1 -Org org-1 -Group "QA Team" -NoPull -NoWait
+          if errorlevel 1 exit /b 1
+          findstr /c:"ARG:LEVOAI_GROUP=QA Team" "%STUB_LOG%" || exit /b 1
+          findstr /c:"SECRETKEY123" "%STUB_LOG%" && (echo KEY LEAKED & exit /b 1)
+          echo cmd.exe run ok
+
+  unix:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stub docker
+        run: |
+          mkdir -p "$RUNNER_TEMP/stub"
+          cat > "$RUNNER_TEMP/stub/docker" <<'EOS'
+          #!/bin/sh
+          [ -n "$STUB_LOG" ] && { printf 'CALL\n' >> "$STUB_LOG"; for a in "$@"; do printf 'ARG:%s\n' "$a" >> "$STUB_LOG"; done; printf 'ENVKEY:%s\n' "${LEVOAI_AUTH_KEY:+set}" >> "$STUB_LOG"; }
+          [ "$1" = inspect ] && echo healthy
+          exit 0
+          EOS
+          chmod +x "$RUNNER_TEMP/stub/docker"
+
+      - name: Repo copy
+        run: .tmp-windows-validation/unix-check.sh "$PWD/dast-and-testrunner/install-shadownet.sh" "$RUNNER_TEMP/stub"
+
+      - name: Download with curl and run (what customers do)
+        run: |
+          for i in 1 2 3 4 5 6 7 8; do curl -fsSL "$RAW/install-shadownet.sh" -o "$RUNNER_TEMP/install-shadownet.sh" && break; sleep 15; done
+          cmp "$RUNNER_TEMP/install-shadownet.sh" dast-and-testrunner/install-shadownet.sh
+          .tmp-windows-validation/unix-check.sh "$RUNNER_TEMP/install-shadownet.sh" "$RUNNER_TEMP/stub"
