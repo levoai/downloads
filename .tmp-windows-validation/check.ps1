@@ -13,6 +13,8 @@ $env:STUB_LOG = $log
 $failures = 0
 
 function Invoke-Script([string[]]$ScriptArgs, [hashtable]$Env = @{}) {
+    # Windows PowerShell 5.1 turns a child's stderr into a terminating error under 'Stop'.
+    $ErrorActionPreference = 'Continue'
     if (Test-Path $log) { Remove-Item $log }
     foreach ($k in 'LEVOAI_AUTH_KEY', 'LEVOAI_ORG_ID', 'LEVOAI_GROUP', 'LEVOAI_BASE_URL', 'LEVOAI_WORKSPACE_ID') { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
     foreach ($k in $Env.Keys) { Set-Item "Env:$k" $Env[$k] }
