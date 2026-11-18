@@ -1,0 +1,99 @@
+name: TEMP validate Helm install scripts (do not merge)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.tmp-windows-validation/**'
+      - '.github/workflows/tmp-validate-helm-scripts.yml'
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build stub helm.exe and kubectl.exe that log their arguments and stdin
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'stub'
+          New-Item -ItemType Directory $dir | Out-Null
+          @'
+          using System;
+          using System.IO;
+          using System.Linq;
+          public static class Stub {
+            public static int Main(string[] a) {
+              string name = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]);
+              var log = Environment.GetEnvironmentVariable("STUB_LOG");
+              var sb = new System.Text.StringBuilder("CALL\nCMD:" + name + "\n");
+              foreach (var x in a) sb.Append("ARG:" + x + "\n");
+              for (int i = 1; i < a.Length; i++) {
+                if (a[i - 1] == "-f" && a[i] == "-") {
+                  var stdin = new StreamReader(Console.OpenStandardInput(), new System.Text.UTF8Encoding(false)).ReadToEnd();
+                  sb.Append("STDIN-BEGIN\n" + stdin.Replace("\r\n", "\n") + "STDIN-END\n");
+                }
+              }
+              if (log != null) File.AppendAllText(log, sb.ToString());
+              if (name == "kubectl") {
+                if (a.Length > 1 && a[0] == "config" && a[1] == "current-context") Console.Out.Write("stub-ctx\n");
+                return 0;
+              }
+              if (name == "helm") {
+                int s = Array.IndexOf(a, "status");
+                if (s >= 0 && s + 1 < a.Length) {
+                  var installed = (Environment.GetEnvironmentVariable("STUB_INSTALLED") ?? "").Split(',');
+                  return installed.Contains(a[s + 1]) ? 0 : 1;
+                }
+              }
+              return 0;
+            }
+          }
+          '@ | Set-Content "$dir\stub.cs"
+          Add-Type -TypeDefinition (Get-Content -Raw "$dir\stub.cs") -OutputType ConsoleApplication -OutputAssembly "$dir\helm.exe"
+          Copy-Item "$dir\helm.exe" "$dir\kubectl.exe"
+          "STUB_DIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Windows PowerShell 5.1
+        shell: powershell
+        run: .\.tmp-windows-validation\check-helm.ps1 -Script "$PWD\dast-and-testrunner\install-all-helm.ps1" -StubDir $env:STUB_DIR
+
+      - name: PowerShell 7
+        shell: pwsh
+        run: ./.tmp-windows-validation/check-helm.ps1 -Script "$PWD\dast-and-testrunner\install-all-helm.ps1" -StubDir $env:STUB_DIR
+
+  unix:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stub helm and kubectl
+        run: |
+          mkdir -p "$RUNNER_TEMP/stub"
+          cat > "$RUNNER_TEMP/stub/stub" <<'EOS'
+          #!/bin/sh
+          name=$(basename "$0")
+          if [ -n "$STUB_LOG" ]; then
+            { printf 'CALL\nCMD:%s\n' "$name"; for a in "$@"; do printf 'ARG:%s\n' "$a"; done; } >> "$STUB_LOG"
+            prev=""; for a in "$@"; do if [ "$prev" = "-f" ] && [ "$a" = "-" ]; then { printf 'STDIN-BEGIN\n'; cat; printf 'STDIN-END\n'; } >> "$STUB_LOG"; fi; prev="$a"; done
+          fi
+          if [ "$name" = kubectl ]; then
+            [ "$1" = config ] && [ "$2" = current-context ] && echo stub-ctx
+            exit 0
+          fi
+          if [ "$name" = helm ]; then
+            rel=""; seen=0; for a in "$@"; do if [ "$seen" = 1 ]; then rel="$a"; seen=0; fi; [ "$a" = status ] && seen=1; done
+            if [ -n "$rel" ]; then case ",$STUB_INSTALLED," in *",$rel,"*) exit 0;; *) exit 1;; esac; fi
+          fi
+          exit 0
+          EOS
+          chmod +x "$RUNNER_TEMP/stub/stub"
+          ln -s stub "$RUNNER_TEMP/stub/helm"; ln -s stub "$RUNNER_TEMP/stub/kubectl"
+
+      - name: install-all-helm.sh
+        run: .tmp-windows-validation/unix-check-helm.sh "$PWD/dast-and-testrunner/install-all-helm.sh" "$RUNNER_TEMP/stub"
