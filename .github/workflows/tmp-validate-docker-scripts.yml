@@ -1,0 +1,95 @@
+name: TEMP validate install-all scripts (do not merge)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.tmp-windows-validation/**'
+      - '.github/workflows/tmp-validate-docker-scripts.yml'
+
+env:
+  RAW_ROOT: https://raw.githubusercontent.com/${{ github.repository }}
+  REF: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build a stub docker.exe that logs its arguments
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'stub'
+          New-Item -ItemType Directory $dir | Out-Null
+          @'
+          using System;
+          using System.IO;
+          public static class Stub {
+            public static int Main(string[] a) {
+              var log = Environment.GetEnvironmentVariable("STUB_LOG");
+              if (log != null) {
+                var sb = new System.Text.StringBuilder("CALL\n");
+                foreach (var x in a) sb.Append("ARG:" + x + "\n");
+                sb.Append("ENVKEY:" + (Environment.GetEnvironmentVariable("LEVOAI_AUTH_KEY") != null ? "set" : "") + "\n");
+                sb.Append("ENVGROUP:" + (Environment.GetEnvironmentVariable("DAST_GROUP") ?? "") + "\n");
+                File.AppendAllText(log, sb.ToString());
+              }
+              if (a.Length > 1 && a[0] == "info" && a[1] == "--format") Console.Out.Write("12526108672\n");
+              if (a.Length > 0 && a[0] == "inspect") Console.Out.Write("healthy\n");
+              return 0;
+            }
+          }
+          '@ | Set-Content "$dir\stub.cs"
+          Add-Type -TypeDefinition (Get-Content -Raw "$dir\stub.cs") -OutputType ConsoleApplication -OutputAssembly "$dir\docker.exe"
+          "STUB_DIR=$dir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Windows PowerShell 5.1 (install downloads from raw at this commit)
+        shell: powershell
+        run: .\.tmp-windows-validation\check-docker.ps1 -Dir "$PWD\dast" -StubDir $env:STUB_DIR -RawBase $env:RAW_ROOT -Ref $env:REF
+
+      - name: PowerShell 7
+        shell: pwsh
+        run: ./.tmp-windows-validation/check-docker.ps1 -Dir "$PWD\dast" -StubDir $env:STUB_DIR -RawBase $env:RAW_ROOT -Ref $env:REF
+
+      - name: Downloaded install-all.ps1 is byte-identical to the repo file (ignoring line endings)
+        shell: pwsh
+        run: |
+          foreach ($f in 'install-all.ps1', 'docker-compose.yml') {
+            $dest = Join-Path $env:RUNNER_TEMP $f
+            foreach ($i in 1..8) {
+              try { Invoke-WebRequest "$env:RAW_ROOT/$env:REF/dast/$f" -OutFile $dest; break }
+              catch { Write-Host "retry $i"; Start-Sleep 15 }
+            }
+            $a = (Get-Content -Raw $dest) -replace "`r`n", "`n"
+            $b = (Get-Content -Raw "dast/$f") -replace "`r`n", "`n"
+            if ($a -ne $b) { throw "$f differs from the raw download" }
+            "$f identical"
+          }
+
+  unix:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stub docker
+        run: |
+          mkdir -p "$RUNNER_TEMP/stub"
+          cat > "$RUNNER_TEMP/stub/docker" <<'EOS'
+          #!/bin/sh
+          if [ -n "$STUB_LOG" ]; then
+            { printf 'CALL\n'; for a in "$@"; do printf 'ARG:%s\n' "$a"; done; printf 'ENVKEY:%s\n' "${LEVOAI_AUTH_KEY:+set}"; printf 'ENVGROUP:%s\n' "$DAST_GROUP"; } >> "$STUB_LOG"
+          fi
+          [ "$1" = info ] && [ "$2" = --format ] && echo 12526108672
+          [ "$1" = inspect ] && echo healthy
+          exit 0
+          EOS
+          chmod +x "$RUNNER_TEMP/stub/docker"
+
+      - name: install-all.sh (install downloads from raw at this commit)
+        run: .tmp-windows-validation/unix-check-docker.sh "$PWD/dast" "$RUNNER_TEMP/stub" "$RAW_ROOT" "$REF"
