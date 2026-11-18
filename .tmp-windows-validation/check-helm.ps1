@@ -15,6 +15,7 @@ function Invoke-It([string[]]$ScriptArgs, [hashtable]$Env = @{}) {
     if (Test-Path $log) { Remove-Item $log }
     foreach ($k in 'LEVOAI_AUTH_KEY', 'LEVOAI_ORG_ID', 'LEVOAI_BASE_URL', 'LEVOAI_WORKSPACE_ID', 'STUB_INSTALLED') { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
     foreach ($k in $Env.Keys) { Set-Item "Env:$k" $Env[$k] }
+    if ($PSVersionTable.PSVersion.Major -lt 7) { $ScriptArgs = @($ScriptArgs | ForEach-Object { $_ -replace '"', '\"' }) }
     $out = & $hostExe -NoProfile -ExecutionPolicy Bypass -File $Script @ScriptArgs 2>&1 | Out-String
     $text = if (Test-Path $log) { Get-Content -Raw $log } else { '' }
     return @{ Code = $LASTEXITCODE; Out = $out; Log = $text }
@@ -42,7 +43,7 @@ Assert-That (Has-Line $r.Log 'ARG:--dry-run') '--dry-run is passed'
 Assert-That (-not ($r.Log -match 'ARG:--wait')) 'no --wait on a dry run'
 Assert-That ($r.Log -match 'key: "SECRETKEY123"') 'key reaches helm on stdin'
 Assert-That (-not (@($r.Log -split "`n" | Where-Object { $_ -like 'ARG:*' }) -match 'SECRETKEY123')) 'key is NOT on any command line'
-Assert-That ($r.Log.Contains('group: "QA,Team \"x\""')) 'group with comma and quotes is escaped in the YAML'
+Assert-That ($r.Log.Contains('group: "QA,Team \"x\""')) 'group with comma and quotes is escaped in the YAML' (($r.Log -split "`n" | Where-Object { $_ -like '*group:*' }) -join ' | ')
 Assert-That (-not (@($r.Log -split "`n" | Where-Object { $_ -like 'ARG:*' }) -match 'QA,Team')) 'group is NOT on any command line'
 Assert-That ($r.Log.Contains('LEVOAI_WORKSPACE_ID: "ws-1"')) 'dast workspace via extraEnv'
 Assert-That ($r.Log.Contains('workspace: "ws-1"')) 'test runner workspace'
