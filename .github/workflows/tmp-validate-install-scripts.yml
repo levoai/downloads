@@ -83,6 +83,7 @@ jobs:
           findstr /c:"ARG:LEVOAI_GROUP=QA Team" "%STUB_LOG%" || exit /b 1
           findstr /c:"SECRETKEY123" "%STUB_LOG%" && (echo KEY LEAKED & exit /b 1)
           echo cmd.exe run ok
+          exit /b 0
 
   unix:
     strategy:
