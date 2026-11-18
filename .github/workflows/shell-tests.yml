@@ -1,15 +1,17 @@
 name: Shell runner tests
 
-# Lints and tests the Bitbucket shell runner. Runs on changes to the runner
-# script or its tests so the PR gets automated checks (previously there were none).
+# Lints and tests the Bitbucket and ShadowNet shell runners. Runs on changes to a
+# runner script or its tests so the PR gets automated checks.
 on:
   push:
     paths:
       - 'bitbucket/**.sh'
+      - 'shadownet/**.sh'
       - '.github/workflows/shell-tests.yml'
   pull_request:
     paths:
       - 'bitbucket/**.sh'
+      - 'shadownet/**.sh'
       - '.github/workflows/shell-tests.yml'
 
 jobs:
@@ -27,9 +29,16 @@ jobs:
         run: |
           shellcheck --severity=warning bitbucket/levo-cli-runner.sh
           shellcheck --severity=warning bitbucket/tests/run_tests.sh
+          shellcheck --severity=warning shadownet/shadownet-runner.sh
+          shellcheck --severity=warning shadownet/tests/run_tests.sh
 
       - name: Syntax check
-        run: bash -n bitbucket/levo-cli-runner.sh
+        run: |
+          bash -n bitbucket/levo-cli-runner.sh
+          bash -n shadownet/shadownet-runner.sh
 
-      - name: Run tests
+      - name: Run tests (bitbucket runner)
         run: bitbucket/tests/run_tests.sh
+
+      - name: Run tests (shadownet runner)
+        run: shadownet/tests/run_tests.sh
